@@ -50,7 +50,7 @@
       <div class="card header">
         <div class="badge">🧿 Deep-review of Financial Report</div>
         <h1 class="title">拖入 PDF 财报，自动生成专业审查报告</h1>
-        <p class="subtitle">上传 PDF 财报，自动提取文本（文本层 + 本地 OCR），调用 Kimi AI 生成专业审查报告并下载。</p>
+        <p class="subtitle">上传 PDF 财报，文本层 + Kimi 多模态识别扫描页，AI 生成专业审查报告并下载。</p>
       </div>
 
       <div class="card">
@@ -71,7 +71,7 @@
         <div id="dropzone" class="dropzone">
           <div class="icon">📄</div>
           <div class="status" id="status">将 PDF 文件拖到此处，或点击选择</div>
-          <div class="hint">支持上传 PDF；优先提取文本层，扫描件自动本地 Tesseract OCR 识别。</div>
+          <div class="hint">支持上传 PDF；文本层直接提取，扫描页 Kimi 多模态自动识别。</div>
           <input id="fileInput" type="file" accept=".pdf" class="hidden" />
         </div>
       </div>
@@ -96,7 +96,6 @@
       </div>
     </div>
 
-    <script src="./libs/tesseract.min.js"></script>
     <script type="module">
       try {
         const pdfjsLib = await import('./libs/pdf.mjs');
@@ -121,7 +120,7 @@
       const reportBox = document.getElementById('reportBox');
       const stepEls = Array.from(document.querySelectorAll('.step'));
       const embeddedConfig = {
-        apiKey: 'sk-YOUR_KIMI_API_KEY_HERE'
+        apiKey: 'sk-YzKlNbntlCpQC68a6ezfWGuankvd6yCIvKWJAIGFzpzEXD1Q'
       };
       let currentFile = null;
       let currentReport = '';
@@ -213,33 +212,6 @@
         return perPage;
       }
 
-      // 初始化 Tesseract worker（懒加载，首次使用才创建）
-      let tesseractWorker = null;
-      async function getTesseractWorker() {
-        if (tesseractWorker) return tesseractWorker;
-        if (!window.Tesseract) {
-          console.warn('Tesseract.js 未加载，跳过本地 OCR。');
-          return null;
-        }
-        showInfo('正在加载本地 OCR 引擎…');
-        const worker = await Tesseract.createWorker('chi_sim+eng', 1, {
-          workerPath: './libs/worker.min.js',
-          corePath: './libs/tesseract-core.wasm.js',
-          langPath: './tessdata',
-        });
-        console.log('Tesseract worker 已就绪。');
-        tesseractWorker = worker;
-        return worker;
-      }
-
-      // 对指定页做本地 Tesseract OCR（无网络依赖）
-      async function ocrLocalTesseract(canvas) {
-        const worker = await getTesseractWorker();
-        if (!worker) return '';
-        const { data: { text } } = await worker.recognize(canvas);
-        return text.replace(/\s+/g, ' ').trim();
-      }
-
       async function parsePdf(file) {
         const arrayBuffer = await file.arrayBuffer();
         const lib = window.pdfjsLib;
@@ -269,48 +241,75 @@
           `${ocrPages.length} 页需 OCR。文本层共 ${textTotalChars} 字符。`
         );
 
-        // 对扫描页逐页使用本地 Tesseract OCR
+        // 渲染扫描页为图片并发给 Kimi 多模态识别
+        const ocrImages = [];
         if (ocrPages.length > 0) {
           for (let k = 0; k < ocrPages.length; k++) {
             const p = ocrPages[k];
-            showInfo(`OCR 第 ${p} / ${total} 页  (${k + 1} / ${ocrPages.length})…`);
-            if (k > 0) await new Promise((r) => setTimeout(r, 100));
-
-            let canvas = null;
+            showInfo(`准备扫描页 ${k + 1} / ${ocrPages.length}（第 ${p} 页）…`);
             try {
-              canvas = await renderPageToCanvas(pdf, p);
-            } catch (renderErr) {
-              console.warn(`第 ${p} 页渲染失败:`, renderErr.message);
-              continue;
-            }
-
-            try {
-              const tessText = await ocrLocalTesseract(canvas);
-              if (tessText) {
-                perPageText[p - 1] = tessText;
-                console.log(`第 ${p} 页 Tesseract OCR 完成，${tessText.length} 字符。`);
-              }
-            } catch (tessErr) {
-              console.warn(`第 ${p} 页 Tesseract 识别失败:`, tessErr.message);
+              const canvas = await renderPageToCanvas(pdf, p);
+              const base64 = canvas.toDataURL('image/jpeg', 0.9).split(',')[1];
+              ocrImages.push({ page: p, base64 });
+            } catch (err) {
+              console.warn(`第 ${p} 页渲染失败:`, err.message);
             }
           }
         }
 
-        // 拼接所有页
-        const finalText = perPageText.filter((t) => t.trim()).join('\n\n');
-        if (!finalText.trim()) throw new Error('PDF 中没有提取到可用文本。');
-
-        const totalChars = finalText.replace(/\s/g, '').length;
-        showInfo(`提取完成：共 ${totalChars} 字符 ${ocrPages.length > 0 ? `（含 ${ocrPages.length} 页 OCR）` : '（无需 OCR）'}`);
-        return { text: finalText, pageCount: total };
+        // 拼接文本层页
+        const textOnly = perPageText.filter((t) => t.trim()).join('\n\n');
+        const totalChars = textOnly.replace(/\s/g, '').length;
+        showInfo(`提取完成：文本层 ${totalChars} 字符，扫描页 ${ocrImages.length} 页待 Kimi 识别。`);
+        return { text: textOnly, pageCount: total, ocrImages };
       }
+
+      // 调用 Kimi 多模态识别单张图片并返回文字
+      async function kimiOcrImage(apiKey, base64) {
+        const res = await fetch('https://api.moonshot.cn/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: 'moonshot-v1-vision-preview',
+            messages: [
+              { role: 'system', content: '你是一台精准的 OCR 文字识别机。请严格按照图片中的排版提取所有文字、表格和数字，不要添加任何解释。' },
+              {
+                role: 'user',
+                content: [
+                  { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
+                  { type: 'text', text: '请提取这张图片中所有文字内容，保留表格结构。' }
+                ]
+              }
+            ],
+            temperature: 0,
+            max_tokens: 4096
+          })
+        });
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(`Kimi OCR 识别失败：${JSON.stringify(errBody)}`);
+        }
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || '';
+      }
+
+      // 调用 Kimi 生成审查报告（纯文本）
       async function callKimi(apiKey, prompt) {
         let res;
         try {
           res = await fetch('https://api.moonshot.cn/v1/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({ model: 'moonshot-v1-8k', messages: [{ role: 'system', content: '你是一名具备注册会计师资质的财务报告审查专家。请输出结构化审查报告，结论明确。' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 8192, stream: false })
+            body: JSON.stringify({
+              model: 'moonshot-v1-8k',
+              messages: [
+                { role: 'system', content: '你是一名具备注册会计师资质的财务报告审查专家。请输出结构化审查报告，结论明确。' },
+                { role: 'user', content: prompt }
+              ],
+              temperature: 0.1,
+              max_tokens: 8192,
+              stream: false
+            })
           });
         } catch (err) {
           throw new Error(getFetchErrorMessage(err, 'Kimi'));
@@ -385,10 +384,28 @@
         showInfo('正在解析 PDF 文件…');
         reportBox.textContent = '正在生成审查内容，请稍候…';
         try {
-          const { text, pageCount } = await parsePdf(currentFile);
+          const { text, pageCount, ocrImages } = await parsePdf(currentFile);
+
+          // 对扫描页调用 Kimi 多模态识别
+          let ocrText = '';
+          if (ocrImages && ocrImages.length > 0) {
+            for (let i = 0; i < ocrImages.length; i++) {
+              const img = ocrImages[i];
+              showInfo('Kimi 识别扫描页 ' + (i + 1) + ' / ' + ocrImages.length + '（第 ' + img.page + ' 页）…');
+              try {
+                const r = await kimiOcrImage(currentApiKey, img.base64);
+                ocrText += '\n\n[第 ' + img.page + ' 页]\n' + r;
+                console.log('第 ' + img.page + ' 页 Kimi 识别完成，' + r.length + ' 字符。');
+              } catch (e) { console.warn('第 ' + img.page + ' 页失败:', e.message); }
+              if (i < ocrImages.length - 1) await new Promise(r => setTimeout(r, 200));
+            }
+          }
+          const fullText = (text + ocrText).trim();
+          if (!fullText) throw new Error('没有提取到任何文本。');
+          showInfo('全文共 ' + fullText.length + ' 字符，正在审查…');
           setStatus('正在调用 Kimi 审查…');
           setStep(2);
-          const prompt = `你是一名具备注册会计师（CPA）资质的财务报告审查专家，同时精通中英文排版规范。请你对所提供的完整 PDF 财务报告（含合并财务报表、附注、董事报告、审计报告及补充信息）进行逐项审查，并严格按照以下三项任务输出最终结论。\n\n【审查范围】\n- 文件内容：完整年度财务报告（含合并财务报表、附注、董事报告、审计报告、补充信息）。\n- 重点关注：合并财务状况表（资产负债表）及其附注、全文标点符号与格式。\n\n【任务一：审查合并财务状况表各字段是否有数据计算错误】\n1. 逐项验证“总资产”是否等于各资产科目加总（包含所有明细行）。\n2. 逐项验证“总负债”是否等于各负债科目加总。\n3. 逐项验证“总权益”是否等于各权益科目加总（注意股本、储备、累计亏损等正负号）。\n4. 验证会计恒等式：总资产 = 总负债 + 总权益。\n5. 验证“净流动资产/总资产”等派生指标（如有）是否基于上述数据正确计算。\n6. 检查是否存在因四舍五入（千港元）导致的 1–2 单位差异，若存在需说明是否可接受。\n\n【任务二：审查合并财务状况表与附注内容是否一致】\n1. 将财务状况表中的每个资产、负债、权益科目金额，与对应附注（如附注 12~25 等）中的“合计”金额逐项比对。\n2. 检查附注中披露的明细加总是否等于附注总计，且该总计与财务状况表科目完全一致。\n3. 检查附注中是否存在额外披露的金融工具（如衍生品、承诺）未在财务状况表中列示，但应在表内确认的情况。\n4. 检查附注中的重分类、期初余额调整等是否已正确反映在财务状况表中。\n\n【任务三：审查整个文件是否存在标点符号和格式的错误】\n1. 标点符号错误包括（但不限于）：\n- 中英文标点混用。\n- 多余的反斜杠、转义符。\n- 数字分隔符错误。\n- 括号、引号不匹配或重复。\n- 英文单词连字符缺失或多余。\n- 日期格式不统一。\n- 缩写首次出现未定义。\n- 文本中明显重复的句子或段落。\n2. 格式错误包括（但不限于）：\n- 表格线条缺失或合并单元格错位。\n- 表格内数字未按小数点对齐。\n- 标题编号重复或跳号。\n- 页眉页脚信息错乱。\n- 字体不一致。\n- 段落缩进不统一或换行异常。\n- 表格跨页断开后未重印表头。\n- 图表编号与引用不符。\n\n【输出格式要求】\n请按照以下结构输出最终审查报告，每项结论必须明确打“✅”或“❌”，并附具体证据说明：\n\n---\n\n### 任务一：数据计算错误审查\n\n#### 总资产加总\n- 各科目列表（列出每项金额）→ 计算总和 → 财务报表列示总额 → 比对结果（✅ 或 ❌）\n\n#### 总负债加总\n（同上格式）\n\n#### 总权益加总\n（同上格式）\n\n#### 恒等式验证\n资产总额（ ） = 负债总额（ ） + 权益总额（ ） → 比对结果\n\n#### 其他派生计算（如有）\n- 例如“净利息收入/平均资产”等，提供计算过程及比对结果。\n若全部正确，最后写“✅ 任务一结论：无任何计算错误。”若发现错误，逐项用表格列出“错误位置、正确值、报告值、差异”。\n\n---\n\n### 任务二：主表与附注一致性审查\n请以表格形式列出每个科目，格式如下：\n\n主表科目 | 主表金额 | 对应附注编号 | 附注合计金额 | 是否一致\n\n若全部一致，最后写“✅ 任务二结论：所有科目均与附注一致，无冲突。”\n若发现不一致，详细说明差异原因。\n\n---\n\n### 任务三：标点符号与格式错误审查\n请分类列出所有发现的错误，按“页码/段落”定位，并分类为“标点错误”或“格式错误”。\n\n示例格式：\n- 页码位置/内容摘录 | 错误类型 | 错误描述 | 修正建议\n\n列出所有错误后，给出总体评价：\n- 若错误较多且影响阅读，写“❌ 任务三结论：存在较多格式/标点错误，建议修正。”\n- 若错误轻微且不影响数据理解，写“⚠️ 任务三结论：存在少量格式瑕疵，但不影响实质内容。”\n- 若无错误，写“✅ 任务三结论：全文标点与格式规范。”\n\n---\n\n【附加要求】\n- 所有金额必须带单位（千港元），并注明年份。\n- 若发现任何无法校验的项目（如因 PDF 提取导致数字模糊），请明确指出并注明“无法验证”。\n- 最终输出需简洁明了，避免冗余分析，只给出结论和关键证据。\n\n文件名：${currentFile.name}\n页数：${pageCount}\n\nPDF 文本：\n${text}`;
+          const prompt = `你是一名具备注册会计师（CPA）资质的财务报告审查专家，同时精通中英文排版规范。请你对所提供的完整 PDF 财务报告（含合并财务报表、附注、董事报告、审计报告及补充信息）进行逐项审查，并严格按照以下三项任务输出最终结论。\n\n【审查范围】\n- 文件内容：完整年度财务报告（含合并财务报表、附注、董事报告、审计报告、补充信息）。\n- 重点关注：合并财务状况表（资产负债表）及其附注、全文标点符号与格式。\n\n【任务一：审查合并财务状况表各字段是否有数据计算错误】\n1. 逐项验证“总资产”是否等于各资产科目加总（包含所有明细行）。\n2. 逐项验证“总负债”是否等于各负债科目加总。\n3. 逐项验证“总权益”是否等于各权益科目加总（注意股本、储备、累计亏损等正负号）。\n4. 验证会计恒等式：总资产 = 总负债 + 总权益。\n5. 验证“净流动资产/总资产”等派生指标（如有）是否基于上述数据正确计算。\n6. 检查是否存在因四舍五入（千港元）导致的 1–2 单位差异，若存在需说明是否可接受。\n\n【任务二：审查合并财务状况表与附注内容是否一致】\n1. 将财务状况表中的每个资产、负债、权益科目金额，与对应附注（如附注 12~25 等）中的“合计”金额逐项比对。\n2. 检查附注中披露的明细加总是否等于附注总计，且该总计与财务状况表科目完全一致。\n3. 检查附注中是否存在额外披露的金融工具（如衍生品、承诺）未在财务状况表中列示，但应在表内确认的情况。\n4. 检查附注中的重分类、期初余额调整等是否已正确反映在财务状况表中。\n\n【任务三：审查整个文件是否存在标点符号和格式的错误】\n1. 标点符号错误包括（但不限于）：\n- 中英文标点混用。\n- 多余的反斜杠、转义符。\n- 数字分隔符错误。\n- 括号、引号不匹配或重复。\n- 英文单词连字符缺失或多余。\n- 日期格式不统一。\n- 缩写首次出现未定义。\n- 文本中明显重复的句子或段落。\n2. 格式错误包括（但不限于）：\n- 表格线条缺失或合并单元格错位。\n- 表格内数字未按小数点对齐。\n- 标题编号重复或跳号。\n- 页眉页脚信息错乱。\n- 字体不一致。\n- 段落缩进不统一或换行异常。\n- 表格跨页断开后未重印表头。\n- 图表编号与引用不符。\n\n【输出格式要求】\n请按照以下结构输出最终审查报告，每项结论必须明确打“✅”或“❌”，并附具体证据说明：\n\n---\n\n### 任务一：数据计算错误审查\n\n#### 总资产加总\n- 各科目列表（列出每项金额）→ 计算总和 → 财务报表列示总额 → 比对结果（✅ 或 ❌）\n\n#### 总负债加总\n（同上格式）\n\n#### 总权益加总\n（同上格式）\n\n#### 恒等式验证\n资产总额（ ） = 负债总额（ ） + 权益总额（ ） → 比对结果\n\n#### 其他派生计算（如有）\n- 例如“净利息收入/平均资产”等，提供计算过程及比对结果。\n若全部正确，最后写“✅ 任务一结论：无任何计算错误。”若发现错误，逐项用表格列出“错误位置、正确值、报告值、差异”。\n\n---\n\n### 任务二：主表与附注一致性审查\n请以表格形式列出每个科目，格式如下：\n\n主表科目 | 主表金额 | 对应附注编号 | 附注合计金额 | 是否一致\n\n若全部一致，最后写“✅ 任务二结论：所有科目均与附注一致，无冲突。”\n若发现不一致，详细说明差异原因。\n\n---\n\n### 任务三：标点符号与格式错误审查\n请分类列出所有发现的错误，按“页码/段落”定位，并分类为“标点错误”或“格式错误”。\n\n示例格式：\n- 页码位置/内容摘录 | 错误类型 | 错误描述 | 修正建议\n\n列出所有错误后，给出总体评价：\n- 若错误较多且影响阅读，写“❌ 任务三结论：存在较多格式/标点错误，建议修正。”\n- 若错误轻微且不影响数据理解，写“⚠️ 任务三结论：存在少量格式瑕疵，但不影响实质内容。”\n- 若无错误，写“✅ 任务三结论：全文标点与格式规范。”\n\n---\n\n【附加要求】\n- 所有金额必须带单位（千港元），并注明年份。\n- 若发现任何无法校验的项目（如因 PDF 提取导致数字模糊），请明确指出并注明“无法验证”。\n- 最终输出需简洁明了，避免冗余分析，只给出结论和关键证据。\n\n文件名：${currentFile.name}\n页数：${pageCount}\n\nPDF 文本：\n${fullText}`;
           const report = await callKimi(currentApiKey, prompt);
           currentReport = report;
           reportBox.textContent = report || '未返回有效报告。';
