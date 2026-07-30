@@ -61,6 +61,12 @@
         <div id="settingsPanel" class="hidden" style="margin-top: 8px;">
           <label class="hint" for="apiKeyInput">DeepSeek API Key</label>
           <input id="apiKeyInput" type="password" placeholder="请输入 DeepSeek API Key" style="width: 100%; margin-top: 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid #fbcfe8;" />
+          <label class="hint" for="baiduAppIdInput" style="display:block; margin-top: 12px;">百度 OCR App ID</label>
+          <input id="baiduAppIdInput" type="text" placeholder="请输入百度 OCR App ID" style="width: 100%; margin-top: 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid #fbcfe8;" />
+          <label class="hint" for="baiduApiKeyInput" style="display:block; margin-top: 10px;">百度 OCR API Key</label>
+          <input id="baiduApiKeyInput" type="password" placeholder="请输入百度 OCR API Key" style="width: 100%; margin-top: 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid #fbcfe8;" />
+          <label class="hint" for="baiduSecretKeyInput" style="display:block; margin-top: 10px;">百度 OCR Secret Key</label>
+          <input id="baiduSecretKeyInput" type="password" placeholder="请输入百度 OCR Secret Key" style="width: 100%; margin-top: 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid #fbcfe8;" />
           <div class="actions" style="margin-top: 10px;">
             <button class="primary" id="testKeyBtn">🧪 测试连接</button>
             <button class="muted" id="saveKeyBtn">💾 保存</button>
@@ -125,6 +131,9 @@
       const settingsToggle = document.getElementById('settingsToggle');
       const settingsPanel = document.getElementById('settingsPanel');
       const apiKeyInput = document.getElementById('apiKeyInput');
+      const baiduAppIdInput = document.getElementById('baiduAppIdInput');
+      const baiduApiKeyInput = document.getElementById('baiduApiKeyInput');
+      const baiduSecretKeyInput = document.getElementById('baiduSecretKeyInput');
       const saveKeyBtn = document.getElementById('saveKeyBtn');
       const testKeyBtn = document.getElementById('testKeyBtn');
       const statusEl = document.getElementById('status');
@@ -134,10 +143,22 @@
       const fileInfo = document.getElementById('fileInfo');
       const reportBox = document.getElementById('reportBox');
       const stepEls = Array.from(document.querySelectorAll('.step'));
+      const embeddedConfig = {
+        apiKey: 'sk-832e5ed20b2d47cd836b29ab8b568b67',
+        baiduAppId: '124062223',
+        baiduApiKey: 'IorGARFxcjC6LAN5jYunZC0c',
+        baiduSecretKey: 'kj9qDDqR3jvHgKIfe8aGIcqGdkwljGMr'
+      };
       let currentFile = null;
       let currentReport = '';
-      let currentApiKey = localStorage.getItem('single-file-api-key') || '';
+      let currentApiKey = localStorage.getItem('single-file-api-key') || embeddedConfig.apiKey;
+      let currentBaiduAppId = localStorage.getItem('single-file-baidu-app-id') || embeddedConfig.baiduAppId;
+      let currentBaiduApiKey = localStorage.getItem('single-file-baidu-api-key') || embeddedConfig.baiduApiKey;
+      let currentBaiduSecretKey = localStorage.getItem('single-file-baidu-secret-key') || embeddedConfig.baiduSecretKey;
       apiKeyInput.value = currentApiKey;
+      baiduAppIdInput.value = currentBaiduAppId;
+      baiduApiKeyInput.value = currentBaiduApiKey;
+      baiduSecretKeyInput.value = currentBaiduSecretKey;
 
       function showError(text) {
         errorBox.textContent = text;
@@ -176,8 +197,14 @@
       }
       function saveApiKey() {
         currentApiKey = apiKeyInput.value.trim();
+        currentBaiduAppId = baiduAppIdInput.value.trim();
+        currentBaiduApiKey = baiduApiKeyInput.value.trim();
+        currentBaiduSecretKey = baiduSecretKeyInput.value.trim();
         localStorage.setItem('single-file-api-key', currentApiKey);
-        messageBox.textContent = 'API Key 已保存。';
+        localStorage.setItem('single-file-baidu-app-id', currentBaiduAppId);
+        localStorage.setItem('single-file-baidu-api-key', currentBaiduApiKey);
+        localStorage.setItem('single-file-baidu-secret-key', currentBaiduSecretKey);
+        messageBox.textContent = 'API Key 与百度 OCR 配置已保存。';
       }
       async function testApiKey() {
         if (!currentApiKey) {
@@ -216,7 +243,7 @@
           langPath: './tessdata'
         });
         try {
-            await worker.loadLanguage('eng');
+          await worker.loadLanguage('eng');
           await worker.initialize('eng');
           await worker.setParameters({ tessedit_pageseg_mode: 6 });
           const parts = [];
@@ -238,16 +265,82 @@
           await worker.terminate();
         }
       }
+      async function getBaiduAccessToken(appId, apiKey, secretKey) {
+        const tokenUrl = `https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${encodeURIComponent(apiKey)}&client_secret=${encodeURIComponent(secretKey)}`;
+        const res = await fetch(tokenUrl, { method: 'POST' });
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => '');
+          throw new Error(`百度 OCR 获取 Token 失败：${errBody || res.status}`);
+        }
+        const data = await res.json();
+        if (!data.access_token) throw new Error('百度 OCR 未返回 access_token。');
+        return data.access_token;
+      }
+      async function extractTextWithBaiduOCR(pdf) {
+        const appId = currentBaiduAppId || baiduAppIdInput.value.trim();
+        const apiKey = currentBaiduApiKey || baiduApiKeyInput.value.trim();
+        const secretKey = currentBaiduSecretKey || baiduSecretKeyInput.value.trim();
+        if (!appId || !apiKey || !secretKey) {
+          throw new Error('请先配置百度 OCR 的 App ID、API Key 和 Secret Key。');
+        }
+        const accessToken = await getBaiduAccessToken(appId, apiKey, secretKey);
+        const parts = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const viewport = page.getViewport({ scale: 1.8 });
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) continue;
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          const imageBase64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+          const res = await fetch(`https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${encodeURIComponent(accessToken)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `image=${encodeURIComponent(imageBase64)}`
+          });
+          if (!res.ok) {
+            const errBody = await res.text().catch(() => '');
+            throw new Error(`百度 OCR 识别失败：${errBody || res.status}`);
+          }
+          const data = await res.json();
+          const text = (data.words_result || []).map((item) => item.words).join('\n').replace(/\s+/g, ' ').trim();
+          if (text) parts.push(text);
+        }
+        return parts.join('\n\n');
+      }
+      async function isLikelyScannedPdf(pdf) {
+        const sampleSize = Math.min(pdf.numPages, 3);
+        let imageLikePages = 0;
+        for (let i = 1; i <= sampleSize; i++) {
+          const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          const text = content.items.map((item) => ('str' in item ? item.str : '')).join(' ').trim();
+          if (!text || text.length < 20) imageLikePages += 1;
+        }
+        return imageLikePages >= Math.ceil(sampleSize / 2);
+      }
       async function parsePdf(file) {
         const arrayBuffer = await file.arrayBuffer();
         const pdfjsLib = window.pdfjsLib;
         if (!pdfjsLib) throw new Error('PDF.js 未加载成功。');
         pdfjsLib.GlobalWorkerOptions.workerSrc = './libs/pdf.worker.mjs';
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        let text = await extractTextWithPdfjs(pdf);
-        if (!text.trim() || text.trim().length < 80) {
-          showInfo('文本提取较少，正在尝试 OCR 识别…');
-          text = await extractTextWithOCR(pdf);
+        const likelyScanned = await isLikelyScannedPdf(pdf);
+        let text = '';
+        if (!likelyScanned) {
+          text = await extractTextWithPdfjs(pdf);
+        }
+        if (likelyScanned || !text.trim() || text.trim().length < 80) {
+          showInfo(likelyScanned ? '检测到扫描版 PDF，正在优先调用百度 OCR…' : '文本提取较少，正在尝试百度 OCR 识别…');
+          try {
+            text = await extractTextWithBaiduOCR(pdf);
+          } catch (err) {
+            console.warn('百度 OCR 失败，改用 Tesseract 兜底。', err);
+            showInfo('百度 OCR 失败，正在尝试本地 Tesseract 兜底…');
+            text = await extractTextWithOCR(pdf);
+          }
         }
         if (!text.trim()) throw new Error('PDF 中没有提取到可用文本。');
         return { text, pageCount: pdf.numPages };
@@ -324,7 +417,7 @@
         hideError();
         setStatus('正在解析 PDF…');
         setStep(1);
-        showInfo('正在提取 PDF 文本，如没有内容则尝试 OCR。');
+        showInfo('正在提取 PDF 文本，如没有内容则优先尝试百度 OCR。');
         reportBox.textContent = '正在生成审查内容，请稍候…';
         try {
           const { text, pageCount } = await parsePdf(currentFile);
