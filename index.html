@@ -216,8 +216,7 @@
           langPath: './tessdata'
         });
         try {
-          await worker.load();
-          await worker.loadLanguage('eng');
+            await worker.loadLanguage('eng');
           await worker.initialize('eng');
           await worker.setParameters({ tessedit_pageseg_mode: 6 });
           const parts = [];
