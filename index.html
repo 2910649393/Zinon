@@ -50,7 +50,7 @@
       <div class="card header">
         <div class="badge">🧿 Deep-review of Financial Report</div>
         <h1 class="title">拖入 PDF 财报，自动生成专业审查报告</h1>
-        <p class="subtitle">上传 PDF 财报，文本层 + Kimi 多模态识别扫描页，AI 生成专业审查报告并下载。</p>
+        <p class="subtitle">上传 PDF 财报，PDF.js 提取文本，Kimi AI 生成专业审查报告并下载。</p>
       </div>
 
       <div class="card">
@@ -61,7 +61,7 @@
 
       <div class="card">
         <div class="steps" id="steps">
-          <div class="step" data-step="1"><div class="step-title">📥 解析 PDF</div><div class="step-desc">优先文本层提取，扫描件自动 OCR</div></div>
+          <div class="step" data-step="1"><div class="step-title">📥 解析 PDF</div><div class="step-desc">PDF.js 提取文本层</div></div>
           <div class="step" data-step="2"><div class="step-title">🔍 AI 审查中</div><div class="step-desc">调用 Kimi AI 生成报告</div></div>
           <div class="step" data-step="3"><div class="step-title">✅ 报告生成</div><div class="step-desc">展示审查结论</div></div>
         </div>
@@ -71,7 +71,7 @@
         <div id="dropzone" class="dropzone">
           <div class="icon">📄</div>
           <div class="status" id="status">将 PDF 文件拖到此处，或点击选择</div>
-          <div class="hint">支持上传 PDF；文本层直接提取，扫描页 Kimi 多模态自动识别。</div>
+          <div class="hint">支持上传 PDF；PDF.js 直接提取文本层，Kimi AI 审查。</div>
           <input id="fileInput" type="file" accept=".pdf" class="hidden" />
         </div>
       </div>
@@ -102,10 +102,11 @@
         window.pdfjsLib = pdfjsLib;
         window.pdfjsLib.GlobalWorkerOptions.workerSrc = './libs/pdf.worker.mjs';
       } catch (error) {
-        console.warn('本地 PDF.js 加载失败，页面将尝试使用 CDN 回退。', error);
+        console.warn('本地 PDF.js 加载失败。', error);
       }
     </script>
     <script>
+      // DOM refs
       const dropzone = document.getElementById('dropzone');
       const fileInput = document.getElementById('fileInput');
       const reviewBtn = document.getElementById('reviewBtn');
@@ -119,6 +120,7 @@
       const fileInfo = document.getElementById('fileInfo');
       const reportBox = document.getElementById('reportBox');
       const stepEls = Array.from(document.querySelectorAll('.step'));
+
       const embeddedConfig = {
         apiKey: 'sk-YzKlNbntlCpQC68a6ezfWGuankvd6yCIvKWJAIGFzpzEXD1Q'
       };
@@ -126,64 +128,24 @@
       let currentReport = '';
       let currentApiKey = embeddedConfig.apiKey;
 
-      function isFileOrigin() {
-        return location.protocol === 'file:';
-      }
-
-      function getFetchErrorMessage(err, provider) {
-        if (err?.name === 'TypeError' && /failed to fetch/i.test(err.message || '')) {
-          return `${provider} 请求被浏览器阻止（CORS 限制）。请确保通过 http://localhost:8000 或 GitHub Pages 访问。`;
-        }
-        return err?.message || '请求失败。';
-      }
-
-      function showError(text) {
-        errorBox.innerHTML = text;
-        errorBox.classList.remove('hidden');
-      }
-      function hideError() {
-        errorBox.classList.add('hidden');
-        errorBox.textContent = '';
-      }
-      function showInfo(text) {
-        infoBox.textContent = text;
-        infoBox.classList.remove('hidden');
-      }
-      function hideInfo() {
-        infoBox.classList.add('hidden');
-        infoBox.textContent = '';
-      }
-      function setStatus(text) {
-        statusEl.textContent = text;
-      }
-      function setStep(step) {
-        stepEls.forEach((el) => {
-          const elStep = Number(el.dataset.step);
+      // --- Helpers ---
+      function showError(t) { errorBox.innerHTML = t; errorBox.classList.remove('hidden'); }
+      function hideError() { errorBox.classList.add('hidden'); errorBox.textContent = ''; }
+      function showInfo(t) { infoBox.textContent = t; infoBox.classList.remove('hidden'); }
+      function hideInfo() { infoBox.classList.add('hidden'); infoBox.textContent = ''; }
+      function setStatus(t) { statusEl.textContent = t; }
+      function setStep(s) {
+        stepEls.forEach(el => {
+          const n = Number(el.dataset.step);
           el.classList.remove('active', 'done');
-          if (elStep < step) el.classList.add('done');
-          else if (elStep === step) el.classList.add('active');
+          if (n < s) el.classList.add('done');
+          else if (n === s) el.classList.add('active');
         });
       }
-      function formatSize(size) {
-        if (!size) return '未知';
-        return size > 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(2)} MB` : `${(size / 1024).toFixed(1)} KB`;
-      }
-      function setFile(file) {
-        currentFile = file;
-        fileInfo.innerHTML = `<strong>已选择：</strong> ${file.name}（${formatSize(file.size)}）`;
-      }
-      async function renderPageToCanvas(pdf, pageNumber) {
-        const page = await pdf.getPage(pageNumber);
-        const viewport = page.getViewport({ scale: 1.8 });
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error('无法创建画布。');
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        return canvas;
-      }
-      // 逐页提取文本层（返回每页文本数组，索引 0 对应第 1 页）
+      function formatSize(s) { return s > 1048576 ? (s / 1048576).toFixed(2) + ' MB' : (s / 1024).toFixed(1) + ' KB'; }
+      function setFile(f) { currentFile = f; fileInfo.innerHTML = '<strong>已选择：</strong> ' + f.name + '（' + formatSize(f.size) + '）'; }
+
+      // --- PDF.js text extraction ---
       async function extractTextPerPage(pdf) {
         const perPage = new Array(pdf.numPages).fill('');
         const BATCH = 30;
@@ -191,23 +153,16 @@
           const end = Math.min(start + BATCH - 1, pdf.numPages);
           const batch = [];
           for (let i = start; i <= end; i++) {
-            batch.push(
-              pdf.getPage(i).then(async (page) => {
-                try {
-                  const tc = await page.getTextContent();
-                  return tc.items.map((it) => it.str || '').join(' ').replace(/\s+/g, ' ').trim();
-                } catch (e) {
-                  console.warn(`第 ${i} 页文本提取失败:`, e.message);
-                  return '';
-                }
-              })
-            );
+            batch.push(pdf.getPage(i).then(async page => {
+              try {
+                const tc = await page.getTextContent();
+                return tc.items.map(it => it.str || '').join(' ').replace(/\s+/g, ' ').trim();
+              } catch (e) { console.warn('第' + i + '页提取失败:', e.message); return ''; }
+            }));
           }
           const results = await Promise.all(batch);
-          for (let j = 0; j < results.length; j++) {
-            perPage[start + j - 1] = results[j];
-          }
-          if (end < pdf.numPages) await new Promise((r) => setTimeout(r, 0));
+          for (let j = 0; j < results.length; j++) perPage[start + j - 1] = results[j];
+          if (end < pdf.numPages) await new Promise(r => setTimeout(r, 0));
         }
         return perPage;
       }
@@ -220,129 +175,68 @@
         const pdf = await lib.getDocument({ data: arrayBuffer }).promise;
         const total = pdf.numPages;
 
-        // 第 1 遍：并行提取所有页的文本层
-        showInfo(`正在扫描 ${total} 页文本层…`);
+        showInfo('正在扫描 ' + total + ' 页文本层…');
         const perPageText = await extractTextPerPage(pdf);
 
-        // 找出需要 OCR 的页（文本层 < 50 有效字符的页）
-        const OCR_THRESHOLD = 50;
-        const ocrPages = [];
-        let textTotalChars = 0;
+        let chars = 0, nonEmpty = [];
         for (let i = 0; i < total; i++) {
-          const chars = perPageText[i].replace(/\s/g, '').length;
-          textTotalChars += chars;
-          if (chars < OCR_THRESHOLD) {
-            ocrPages.push(i + 1); // 1-based
-          }
+          chars += perPageText[i].replace(/\s/g, '').length;
+          if (perPageText[i].trim()) nonEmpty.push(perPageText[i]);
         }
-
-        console.log(
-          `${total} 页扫描完成：${total - ocrPages.length} 页可从文本层提取，` +
-          `${ocrPages.length} 页需 OCR。文本层共 ${textTotalChars} 字符。`
-        );
-
-        // 渲染扫描页为图片并发给 Kimi 多模态识别
-        const ocrImages = [];
-        if (ocrPages.length > 0) {
-          for (let k = 0; k < ocrPages.length; k++) {
-            const p = ocrPages[k];
-            showInfo(`准备扫描页 ${k + 1} / ${ocrPages.length}（第 ${p} 页）…`);
-            try {
-              const canvas = await renderPageToCanvas(pdf, p);
-              const base64 = canvas.toDataURL('image/jpeg', 0.9).split(',')[1];
-              ocrImages.push({ page: p, base64 });
-            } catch (err) {
-              console.warn(`第 ${p} 页渲染失败:`, err.message);
-            }
-          }
-        }
-
-        // 拼接文本层页
-        const textOnly = perPageText.filter((t) => t.trim()).join('\n\n');
-        const totalChars = textOnly.replace(/\s/g, '').length;
-        showInfo(`提取完成：文本层 ${totalChars} 字符，扫描页 ${ocrImages.length} 页待 Kimi 识别。`);
-        return { text: textOnly, pageCount: total, ocrImages };
+        const text = nonEmpty.join('\n\n');
+        if (!text.trim()) throw new Error('PDF 中没有提取到任何文本（可能是纯扫描件，文本层为空）。');
+        console.log(total + ' 页扫描完成，' + chars + ' 有效字符，' + nonEmpty.length + ' 页有文本。');
+        showInfo('提取完成：共 ' + chars + ' 字符，' + nonEmpty.length + ' 页。');
+        return { text, pageCount: total };
       }
 
-      // 调用 Kimi 多模态识别单张图片并返回文字
-      async function kimiOcrImage(apiKey, base64) {
-        const res = await fetch('https://api.moonshot.cn/v1/chat/completions', {
+      // --- Kimi API ---
+      const KIMI_API = 'https://api.moonshot.cn/v1/chat/completions';
+
+      // 生成审查报告
+      async function callKimiReview(apiKey, file, text, pageCount) {
+        const prompt = '你是一名具备注册会计师（CPA）资质的财务报告审查专家，同时精通中英文排版规范。请你对所提供的完整 PDF 财务报告（含合并财务报表、附注、董事报告、审计报告及补充信息）进行逐项审查，并严格按照以下三项任务输出最终结论。\n\n【审查范围】\n- 文件内容：完整年度财务报告（含合并财务报表、附注、董事报告、审计报告、补充信息）。\n- 重点关注：合并财务状况表（资产负债表）及其附注、全文标点符号与格式。\n\n【任务一：审查合并财务状况表各字段是否有数据计算错误】\n1. 逐项验证"总资产"是否等于各资产科目加总（包含所有明细行）。\n2. 逐项验证"总负债"是否等于各负债科目加总。\n3. 逐项验证"总权益"是否等于各权益科目加总（注意股本、储备、累计亏损等正负号）。\n4. 验证会计恒等式：总资产 = 总负债 + 总权益。\n5. 验证"净流动资产/总资产"等派生指标（如有）是否基于上述数据正确计算。\n6. 检查是否存在因四舍五入（千港元）导致的 1–2 单位差异，若存在需说明是否可接受。\n\n【任务二：审查合并财务状况表与附注内容是否一致】\n1. 将财务状况表中的每个资产、负债、权益科目金额，与对应附注（如附注 12~25 等）中的"合计"金额逐项比对。\n2. 检查附注中披露的明细加总是否等于附注总计，且该总计与财务状况表科目完全一致。\n3. 检查附注中是否存在额外披露的金融工具（如衍生品、承诺）未在财务状况表中列示，但应在表内确认的情况。\n4. 检查附注中的重分类、期初余额调整等是否已正确反映在财务状况表中。\n\n【任务三：审查整个文件是否存在标点符号和格式的错误】\n1. 标点符号错误包括（但不限于）：\n- 中英文标点混用。\n- 多余的反斜杠、转义符。\n- 数字分隔符错误。\n- 括号、引号不匹配或重复。\n- 英文单词连字符缺失或多余。\n- 日期格式不统一。\n- 缩写首次出现未定义。\n- 文本中明显重复的句子或段落。\n2. 格式错误包括（但不限于）：\n- 表格线条缺失或合并单元格错位。\n- 表格内数字未按小数点对齐。\n- 标题编号重复或跳号。\n- 页眉页脚信息错乱。\n- 字体不一致。\n- 段落缩进不统一或换行异常。\n- 表格跨页断开后未重印表头。\n- 图表编号与引用不符。\n\n【输出格式要求】\n请按照以下结构输出最终审查报告，每项结论必须明确打"✅"或"❌"，并附具体证据说明：\n\n---\n\n### 任务一：数据计算错误审查\n\n#### 总资产加总\n- 各科目列表（列出每项金额）→ 计算总和 → 财务报表列示总额 → 比对结果（✅ 或 ❌）\n\n#### 总负债加总\n（同上格式）\n\n#### 总权益加总\n（同上格式）\n\n#### 恒等式验证\n资产总额（ ） = 负债总额（ ） + 权益总额（ ） → 比对结果\n\n#### 其他派生计算（如有）\n- 例如"净利息收入/平均资产"等，提供计算过程及比对结果。\n若全部正确，最后写"✅ 任务一结论：无任何计算错误。"若发现错误，逐项用表格列出"错误位置、正确值、报告值、差异"。\n\n---\n\n### 任务二：主表与附注一致性审查\n请以表格形式列出每个科目，格式如下：\n\n主表科目 | 主表金额 | 对应附注编号 | 附注合计金额 | 是否一致\n\n若全部一致，最后写"✅ 任务二结论：所有科目均与附注一致，无冲突。"\n若发现不一致，详细说明差异原因。\n\n---\n\n### 任务三：标点符号与格式错误审查\n请分类列出所有发现的错误，按"页码/段落"定位，并分类为"标点错误"或"格式错误"。\n\n示例格式：\n- 页码位置/内容摘录 | 错误类型 | 错误描述 | 修正建议\n\n列出所有错误后，给出总体评价：\n- 若错误较多且影响阅读，写"❌ 任务三结论：存在较多格式/标点错误，建议修正。"\n- 若错误轻微且不影响数据理解，写"⚠️ 任务三结论：存在少量格式瑕疵，但不影响实质内容。"\n- 若无错误，写"✅ 任务三结论：全文标点与格式规范。"\n\n---\n\n【附加要求】\n- 所有金额必须带单位（千港元），并注明年份。\n- 若发现任何无法校验的项目（如因 PDF 提取导致数字模糊），请明确指出并注明"无法验证"。\n- 最终输出需简洁明了，避免冗余分析，只给出结论和关键证据。\n\n文件名：' + file.name + '\n页数：' + pageCount + '\n\nPDF 文本：\n' + text;
+        const res = await fetch(KIMI_API, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
           body: JSON.stringify({
-            model: 'moonshot-v1-vision-preview',
+            model: 'moonshot-v1-8k',
             messages: [
-              { role: 'system', content: '你是一台精准的 OCR 文字识别机。请严格按照图片中的排版提取所有文字、表格和数字，不要添加任何解释。' },
-              {
-                role: 'user',
-                content: [
-                  { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-                  { type: 'text', text: '请提取这张图片中所有文字内容，保留表格结构。' }
-                ]
-              }
+              { role: 'system', content: '你是一名具备注册会计师资质的财务报告审查专家。请输出结构化审查报告，结论明确。' },
+              { role: 'user', content: prompt }
             ],
-            temperature: 0,
-            max_tokens: 4096
+            temperature: 0.1,
+            max_tokens: 8192,
+            stream: false
           })
         });
         if (!res.ok) {
-          const errBody = await res.json().catch(() => ({}));
-          throw new Error(`Kimi OCR 识别失败：${JSON.stringify(errBody)}`);
+          const eb = await res.json().catch(() => ({}));
+          throw new Error('Kimi API 错误：' + JSON.stringify(eb));
         }
         const data = await res.json();
         return data.choices?.[0]?.message?.content || '';
       }
 
-      // 调用 Kimi 生成审查报告（纯文本）
-      async function callKimi(apiKey, prompt) {
-        let res;
-        try {
-          res = await fetch('https://api.moonshot.cn/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({
-              model: 'moonshot-v1-8k',
-              messages: [
-                { role: 'system', content: '你是一名具备注册会计师资质的财务报告审查专家。请输出结构化审查报告，结论明确。' },
-                { role: 'user', content: prompt }
-              ],
-              temperature: 0.1,
-              max_tokens: 8192,
-              stream: false
-            })
-          });
-        } catch (err) {
-          throw new Error(getFetchErrorMessage(err, 'Kimi'));
-        }
-        if (!res.ok) {
-          const errBody = await res.json().catch(() => ({}));
-          throw new Error(`Kimi API 错误：${JSON.stringify(errBody)}`);
-        }
-        const data = await res.json();
-        return data.choices?.[0]?.message?.content || '';
-      }
-
+      // --- Event listeners ---
       dropzone.addEventListener('click', () => fileInput.click());
-      dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragging'); });
+      dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('dragging'); });
       dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragging'));
-      dropzone.addEventListener('drop', (e) => {
+      dropzone.addEventListener('drop', e => {
         e.preventDefault();
         dropzone.classList.remove('dragging');
-        const file = e.dataTransfer.files?.[0];
-        if (file) setFile(file);
+        const f = e.dataTransfer.files?.[0];
+        if (f) setFile(f);
       });
-      fileInput.addEventListener('change', (e) => {
-        const file = e.target.files?.[0];
-        if (file) setFile(file);
+      fileInput.addEventListener('change', e => {
+        const f = e.target.files?.[0];
+        if (f) setFile(f);
       });
       clearBtn.addEventListener('click', () => {
-        currentFile = null;
-        currentReport = '';
-        fileInput.value = '';
-        fileInfo.innerHTML = '';
+        currentFile = null; currentReport = '';
+        fileInput.value = ''; fileInfo.innerHTML = '';
         reportBox.textContent = '等待上传 PDF 文件后开始审查。';
-        hideError();
-        hideInfo();
+        hideError(); hideInfo();
         setStatus('将 PDF 文件拖到此处，或点击选择');
         setStep(1);
       });
@@ -356,25 +250,15 @@
         const blob = new Blob([currentReport], { type: 'text/markdown;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url;
-        a.download = 'financial-review.md';
-        a.click();
-        URL.revokeObjectURL(url);
+        a.href = url; a.download = 'financial-review.md';
+        a.click(); URL.revokeObjectURL(url);
       });
+
       reviewBtn.addEventListener('click', async () => {
-        if (!currentFile) {
-          showError('请先选择一个 PDF 文件。');
-          return;
-        }
-        if (!currentFile.name.toLowerCase().endsWith('.pdf')) {
-          showError('请上传 PDF 文件。');
-          return;
-        }
-        if (!currentApiKey) {
-          showError('请先输入 Kimi API Key。');
-          return;
-        }
-        if (isFileOrigin()) {
+        if (!currentFile) { showError('请先选择一个 PDF 文件。'); return; }
+        if (!currentFile.name.toLowerCase().endsWith('.pdf')) { showError('请上传 PDF 文件。'); return; }
+        if (!currentApiKey) { showError('请先输入 Kimi API Key。'); return; }
+        if (location.protocol === 'file:') {
           showError('当前页面是通过 file:// 打开的，浏览器会阻止远程 API 请求。<br><br>👉 <a href="http://localhost:8000" style="color:#b91c1c;font-weight:700;">点击此处跳转到 http://localhost:8000</a><br><br>或双击运行项目目录下的 <b>start_server.bat</b> 启动本地服务。');
           return;
         }
@@ -384,29 +268,11 @@
         showInfo('正在解析 PDF 文件…');
         reportBox.textContent = '正在生成审查内容，请稍候…';
         try {
-          const { text, pageCount, ocrImages } = await parsePdf(currentFile);
-
-          // 对扫描页调用 Kimi 多模态识别
-          let ocrText = '';
-          if (ocrImages && ocrImages.length > 0) {
-            for (let i = 0; i < ocrImages.length; i++) {
-              const img = ocrImages[i];
-              showInfo('Kimi 识别扫描页 ' + (i + 1) + ' / ' + ocrImages.length + '（第 ' + img.page + ' 页）…');
-              try {
-                const r = await kimiOcrImage(currentApiKey, img.base64);
-                ocrText += '\n\n[第 ' + img.page + ' 页]\n' + r;
-                console.log('第 ' + img.page + ' 页 Kimi 识别完成，' + r.length + ' 字符。');
-              } catch (e) { console.warn('第 ' + img.page + ' 页失败:', e.message); }
-              if (i < ocrImages.length - 1) await new Promise(r => setTimeout(r, 200));
-            }
-          }
-          const fullText = (text + ocrText).trim();
-          if (!fullText) throw new Error('没有提取到任何文本。');
-          showInfo('全文共 ' + fullText.length + ' 字符，正在审查…');
+          const { text, pageCount } = await parsePdf(currentFile);
           setStatus('正在调用 Kimi 审查…');
           setStep(2);
-          const prompt = `你是一名具备注册会计师（CPA）资质的财务报告审查专家，同时精通中英文排版规范。请你对所提供的完整 PDF 财务报告（含合并财务报表、附注、董事报告、审计报告及补充信息）进行逐项审查，并严格按照以下三项任务输出最终结论。\n\n【审查范围】\n- 文件内容：完整年度财务报告（含合并财务报表、附注、董事报告、审计报告、补充信息）。\n- 重点关注：合并财务状况表（资产负债表）及其附注、全文标点符号与格式。\n\n【任务一：审查合并财务状况表各字段是否有数据计算错误】\n1. 逐项验证“总资产”是否等于各资产科目加总（包含所有明细行）。\n2. 逐项验证“总负债”是否等于各负债科目加总。\n3. 逐项验证“总权益”是否等于各权益科目加总（注意股本、储备、累计亏损等正负号）。\n4. 验证会计恒等式：总资产 = 总负债 + 总权益。\n5. 验证“净流动资产/总资产”等派生指标（如有）是否基于上述数据正确计算。\n6. 检查是否存在因四舍五入（千港元）导致的 1–2 单位差异，若存在需说明是否可接受。\n\n【任务二：审查合并财务状况表与附注内容是否一致】\n1. 将财务状况表中的每个资产、负债、权益科目金额，与对应附注（如附注 12~25 等）中的“合计”金额逐项比对。\n2. 检查附注中披露的明细加总是否等于附注总计，且该总计与财务状况表科目完全一致。\n3. 检查附注中是否存在额外披露的金融工具（如衍生品、承诺）未在财务状况表中列示，但应在表内确认的情况。\n4. 检查附注中的重分类、期初余额调整等是否已正确反映在财务状况表中。\n\n【任务三：审查整个文件是否存在标点符号和格式的错误】\n1. 标点符号错误包括（但不限于）：\n- 中英文标点混用。\n- 多余的反斜杠、转义符。\n- 数字分隔符错误。\n- 括号、引号不匹配或重复。\n- 英文单词连字符缺失或多余。\n- 日期格式不统一。\n- 缩写首次出现未定义。\n- 文本中明显重复的句子或段落。\n2. 格式错误包括（但不限于）：\n- 表格线条缺失或合并单元格错位。\n- 表格内数字未按小数点对齐。\n- 标题编号重复或跳号。\n- 页眉页脚信息错乱。\n- 字体不一致。\n- 段落缩进不统一或换行异常。\n- 表格跨页断开后未重印表头。\n- 图表编号与引用不符。\n\n【输出格式要求】\n请按照以下结构输出最终审查报告，每项结论必须明确打“✅”或“❌”，并附具体证据说明：\n\n---\n\n### 任务一：数据计算错误审查\n\n#### 总资产加总\n- 各科目列表（列出每项金额）→ 计算总和 → 财务报表列示总额 → 比对结果（✅ 或 ❌）\n\n#### 总负债加总\n（同上格式）\n\n#### 总权益加总\n（同上格式）\n\n#### 恒等式验证\n资产总额（ ） = 负债总额（ ） + 权益总额（ ） → 比对结果\n\n#### 其他派生计算（如有）\n- 例如“净利息收入/平均资产”等，提供计算过程及比对结果。\n若全部正确，最后写“✅ 任务一结论：无任何计算错误。”若发现错误，逐项用表格列出“错误位置、正确值、报告值、差异”。\n\n---\n\n### 任务二：主表与附注一致性审查\n请以表格形式列出每个科目，格式如下：\n\n主表科目 | 主表金额 | 对应附注编号 | 附注合计金额 | 是否一致\n\n若全部一致，最后写“✅ 任务二结论：所有科目均与附注一致，无冲突。”\n若发现不一致，详细说明差异原因。\n\n---\n\n### 任务三：标点符号与格式错误审查\n请分类列出所有发现的错误，按“页码/段落”定位，并分类为“标点错误”或“格式错误”。\n\n示例格式：\n- 页码位置/内容摘录 | 错误类型 | 错误描述 | 修正建议\n\n列出所有错误后，给出总体评价：\n- 若错误较多且影响阅读，写“❌ 任务三结论：存在较多格式/标点错误，建议修正。”\n- 若错误轻微且不影响数据理解，写“⚠️ 任务三结论：存在少量格式瑕疵，但不影响实质内容。”\n- 若无错误，写“✅ 任务三结论：全文标点与格式规范。”\n\n---\n\n【附加要求】\n- 所有金额必须带单位（千港元），并注明年份。\n- 若发现任何无法校验的项目（如因 PDF 提取导致数字模糊），请明确指出并注明“无法验证”。\n- 最终输出需简洁明了，避免冗余分析，只给出结论和关键证据。\n\n文件名：${currentFile.name}\n页数：${pageCount}\n\nPDF 文本：\n${fullText}`;
-          const report = await callKimi(currentApiKey, prompt);
+          showInfo('全文共 ' + text.length + ' 字符，正在发送给 Kimi…');
+          const report = await callKimiReview(currentApiKey, currentFile, text, pageCount);
           currentReport = report;
           reportBox.textContent = report || '未返回有效报告。';
           setStatus('审查完成');
