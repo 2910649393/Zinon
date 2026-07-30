@@ -96,6 +96,7 @@
       </div>
     </div>
 
+    <script src="./libs/tesseract.min.js"></script>
     <script type="module">
       try {
         const pdfjsLib = await import('./libs/pdf.mjs');
@@ -266,8 +267,35 @@
         return perPage;
       }
 
-      // 对指定页做百度 OCR
-      async function ocrSinglePage(pdf, pageNum, accessToken) {
+      // 初始化 Tesseract worker（懒加载，首次使用才创建）
+      let tesseractWorker = null;
+      async function getTesseractWorker() {
+        if (tesseractWorker) return tesseractWorker;
+        if (!window.Tesseract) {
+          console.warn('Tesseract.js 未加载，跳过本地 OCR。');
+          return null;
+        }
+        showInfo('正在加载本地 OCR 引擎…');
+        const worker = await Tesseract.createWorker('chi_sim+eng', 1, {
+          workerPath: './libs/worker.min.js',
+          corePath: './libs/tesseract-core.wasm.js',
+          langPath: './tessdata',
+        });
+        console.log('Tesseract worker 已就绪。');
+        tesseractWorker = worker;
+        return worker;
+      }
+
+      // 对指定页做本地 Tesseract OCR（无网络依赖）
+      async function ocrLocalTesseract(canvas) {
+        const worker = await getTesseractWorker();
+        if (!worker) return '';
+        const { data: { text } } = await worker.recognize(canvas);
+        return text.replace(/\s+/g, ' ').trim();
+      }
+
+      // 对指定页做百度 OCR（通过 CORS 代理）
+      async function ocrBaiduPage(pdf, pageNum, accessToken) {
         const canvas = await renderPageToCanvas(pdf, pageNum);
         const img = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
         const url = `https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${encodeURIComponent(accessToken)}`;
@@ -318,26 +346,76 @@
           `${ocrPages.length} 页需 OCR。文本层共 ${textTotalChars} 字符。`
         );
 
-        // 如果需要 OCR 的页数 > 0，获取 access_token 并逐页 OCR
+        // 对扫描页逐页 OCR：优先本地 Tesseract，百度 API 作为备选
         if (ocrPages.length > 0) {
+          let baiduToken = null;
+          // 尝试获取百度 token
           const appId = currentBaiduAppId || baiduAppIdInput?.value?.trim();
           const apiKey = currentBaiduApiKey || baiduApiKeyInput?.value?.trim();
           const secretKey = currentBaiduSecretKey || baiduSecretKeyInput?.value?.trim();
-          if (!appId || !apiKey || !secretKey) {
-            // 无百度配置时跳过 OCR，仅用文本层
-            showInfo(`共 ${ocrPages.length} 页扫描件，但未配置百度 OCR，仅使用文本层内容。`);
-          } else {
-            const accessToken = await getBaiduAccessToken(appId, apiKey, secretKey);
-            for (let k = 0; k < ocrPages.length; k++) {
-              const p = ocrPages[k];
-              showInfo(`OCR 第 ${p} / ${total} 页  (扫描件 ${k + 1} / ${ocrPages.length})…`);
-              if (k > 0) await new Promise((r) => setTimeout(r, 300));
-              try {
-                const ocrText = await ocrSinglePage(pdf, p, accessToken);
-                perPageText[p - 1] = ocrText || perPageText[p - 1];
-              } catch (err) {
-                console.warn(`第 ${p} 页 OCR 失败，保留文本层:`, err.message);
+          if (appId && apiKey && secretKey) {
+            try {
+              baiduToken = await getBaiduAccessToken(appId, apiKey, secretKey);
+              console.log('百度 OCR token 已获取，将用于增强识别。');
+            } catch (e) {
+              console.warn('百度 OCR token 获取失败，仅使用本地 OCR:', e.message);
+            }
+          }
+
+          for (let k = 0; k < ocrPages.length; k++) {
+            const p = ocrPages[k];
+            showInfo(`OCR 第 ${p} / ${total} 页  (${k + 1} / ${ocrPages.length})…`);
+            if (k > 0) await new Promise((r) => setTimeout(r, 100));
+
+            // 对当前页渲染一次 canvas
+            let canvas = null;
+            try {
+              canvas = await renderPageToCanvas(pdf, p);
+            } catch (renderErr) {
+              console.warn(`第 ${p} 页渲染失败:`, renderErr.message);
+              continue;
+            }
+
+            let combinedResult = '';
+
+            // 方案1：本地 Tesseract OCR（无网络依赖，始终可用）
+            try {
+              const tessText = await ocrLocalTesseract(canvas);
+              if (tessText) {
+                combinedResult = tessText;
+                console.log(`第 ${p} 页 Tesseract 本地 OCR 完成，${tessText.length} 字符。`);
               }
+            } catch (tessErr) {
+              console.warn(`第 ${p} 页 Tesseract 识别失败:`, tessErr.message);
+            }
+
+            // 方案2：百度 OCR 增强（如果能用，合并结果）
+            if (baiduToken) {
+              try {
+                const img = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
+                const baiduUrl = `https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${encodeURIComponent(baiduToken)}`;
+                const res = await baiduFetch(baiduUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                  body: `image=${encodeURIComponent(img)}`
+                });
+                if (res.ok) {
+                  const data = await res.json();
+                  const baiduText = (data.words_result || []).map((w) => w.words).join('\n').replace(/\s+/g, ' ').trim();
+                  if (baiduText) {
+                    combinedResult = combinedResult ? combinedResult + '\n' + baiduText : baiduText;
+                    console.log(`第 ${p} 页百度 OCR 增强完成。`);
+                  }
+                } else {
+                  console.warn(`第 ${p} 页百度 OCR HTTP ${res.status}`);
+                }
+              } catch (baiduErr) {
+                console.warn(`第 ${p} 页百度 OCR 调用失败:`, baiduErr.message);
+              }
+            }
+
+            if (combinedResult.trim()) {
+              perPageText[p - 1] = combinedResult.trim();
             }
           }
         }
