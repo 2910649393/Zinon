@@ -50,7 +50,7 @@
       <div class="card header">
         <div class="badge">🧿 Deep-review of Financial Report</div>
         <h1 class="title">拖入 PDF 财报，自动生成专业审查报告</h1>
-        <p class="subtitle">这是一个可直接转发使用的单文件版本，保留了当前项目的核心功能：上传、仅使用百度 OCR 提取文本、API Key 设置、报告生成与下载。</p>
+        <p class="subtitle">上传 PDF 财报，自动提取文本（文本层 + 本地 OCR），调用 Kimi AI 生成专业审查报告并下载。</p>
       </div>
 
       <div class="card">
@@ -62,7 +62,7 @@
       <div class="card">
         <div class="steps" id="steps">
           <div class="step" data-step="1"><div class="step-title">📥 解析 PDF</div><div class="step-desc">优先文本层提取，扫描件自动 OCR</div></div>
-          <div class="step" data-step="2"><div class="step-title">🔍 AI 审查中</div><div class="step-desc">调用 DeepSeek 生成报告</div></div>
+          <div class="step" data-step="2"><div class="step-title">🔍 AI 审查中</div><div class="step-desc">调用 Kimi AI 生成报告</div></div>
           <div class="step" data-step="3"><div class="step-title">✅ 报告生成</div><div class="step-desc">展示审查结论</div></div>
         </div>
       </div>
@@ -71,7 +71,7 @@
         <div id="dropzone" class="dropzone">
           <div class="icon">📄</div>
           <div class="status" id="status">将 PDF 文件拖到此处，或点击选择</div>
-          <div class="hint">支持上传 PDF；优先提取文本层，扫描件自动调用百度 OCR 识别。</div>
+          <div class="hint">支持上传 PDF；优先提取文本层，扫描件自动本地 Tesseract OCR 识别。</div>
           <input id="fileInput" type="file" accept=".pdf" class="hidden" />
         </div>
       </div>
@@ -121,22 +121,11 @@
       const reportBox = document.getElementById('reportBox');
       const stepEls = Array.from(document.querySelectorAll('.step'));
       const embeddedConfig = {
-        apiKey: 'sk-832e5ed20b2d47cd836b29ab8b568b67',
-        baiduAppId: '124062223',
-        baiduApiKey: 'IorGARFxcjC6LAN5jYunZC0c',
-        baiduSecretKey: 'kj9qDDqR3jvHgKIfe8aGIcqGdkwljGMr'
+        apiKey: 'sk-YOUR_KIMI_API_KEY_HERE'
       };
       let currentFile = null;
       let currentReport = '';
       let currentApiKey = embeddedConfig.apiKey;
-      let currentBaiduAppId = embeddedConfig.baiduAppId;
-      let currentBaiduApiKey = embeddedConfig.baiduApiKey;
-      let currentBaiduSecretKey = embeddedConfig.baiduSecretKey;
-
-      const CORS_PROXIES = [
-        'https://corsproxy.io/?',
-        'https://api.allorigins.win/raw?url='
-      ];
 
       function isFileOrigin() {
         return location.protocol === 'file:';
@@ -144,36 +133,9 @@
 
       function getFetchErrorMessage(err, provider) {
         if (err?.name === 'TypeError' && /failed to fetch/i.test(err.message || '')) {
-          return `${provider} 请求被浏览器阻止（CORS 限制）。已尝试直连和 CORS 代理均失败。如果你是部署到 GitHub Pages，请检查百度/DeepSeek API 服务是否正常。`;
+          return `${provider} 请求被浏览器阻止（CORS 限制）。请确保通过 http://localhost:8000 或 GitHub Pages 访问。`;
         }
         return err?.message || '请求失败。';
-      }
-
-      async function baiduFetch(url, options = {}) {
-        // 先尝试直连
-        try {
-          const res = await fetch(url, options);
-          return res;
-        } catch (directErr) {
-          if (directErr.name !== 'TypeError' || !/failed to fetch/i.test(directErr.message || '')) {
-            throw directErr;
-          }
-          console.warn('直连百度 API 被 CORS 阻止，尝试通过 CORS 代理...');
-        }
-        // 通过 CORS 代理逐一遍历重试
-        let lastErr;
-        for (const proxy of CORS_PROXIES) {
-          try {
-            const proxyUrl = proxy + encodeURIComponent(url);
-            const res = await fetch(proxyUrl, options);
-            if (res.ok) return res;
-            lastErr = new Error(`代理返回 HTTP ${res.status}`);
-          } catch (proxyErr) {
-            lastErr = proxyErr;
-            console.warn(`CORS 代理 ${proxy} 失败:`, proxyErr.message);
-          }
-        }
-        throw lastErr || new Error('百度 OCR: 所有 CORS 代理均不可用');
       }
 
       function showError(text) {
@@ -221,22 +183,6 @@
         if (!ctx) throw new Error('无法创建画布。');
         await page.render({ canvasContext: ctx, viewport }).promise;
         return canvas;
-      }
-      async function getBaiduAccessToken(appId, apiKey, secretKey) {
-        const tokenUrl = `https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${encodeURIComponent(apiKey)}&client_secret=${encodeURIComponent(secretKey)}`;
-        let res;
-        try {
-          res = await baiduFetch(tokenUrl, { method: 'POST' });
-        } catch (err) {
-          throw new Error(getFetchErrorMessage(err, '百度 OCR'));
-        }
-        if (!res.ok) {
-          const errBody = await res.text().catch(() => '');
-          throw new Error(`百度 OCR 获取 Token 失败：${errBody || res.status}`);
-        }
-        const data = await res.json();
-        if (!data.access_token) throw new Error('百度 OCR 未返回 access_token。');
-        return data.access_token;
       }
       // 逐页提取文本层（返回每页文本数组，索引 0 对应第 1 页）
       async function extractTextPerPage(pdf) {
@@ -294,29 +240,6 @@
         return text.replace(/\s+/g, ' ').trim();
       }
 
-      // 对指定页做百度 OCR（通过 CORS 代理）
-      async function ocrBaiduPage(pdf, pageNum, accessToken) {
-        const canvas = await renderPageToCanvas(pdf, pageNum);
-        const img = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
-        const url = `https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${encodeURIComponent(accessToken)}`;
-        let res;
-        try {
-          res = await baiduFetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `image=${encodeURIComponent(img)}`
-          });
-        } catch (err) {
-          throw new Error(getFetchErrorMessage(err, '百度 OCR'));
-        }
-        if (!res.ok) {
-          const eb = await res.text().catch(() => '');
-          throw new Error(`百度 OCR 第 ${pageNum} 页失败：${eb || res.status}`);
-        }
-        const data = await res.json();
-        return (data.words_result || []).map((w) => w.words).join('\n').replace(/\s+/g, ' ').trim();
-      }
-
       async function parsePdf(file) {
         const arrayBuffer = await file.arrayBuffer();
         const lib = window.pdfjsLib;
@@ -346,28 +269,13 @@
           `${ocrPages.length} 页需 OCR。文本层共 ${textTotalChars} 字符。`
         );
 
-        // 对扫描页逐页 OCR：优先本地 Tesseract，百度 API 作为备选
+        // 对扫描页逐页使用本地 Tesseract OCR
         if (ocrPages.length > 0) {
-          let baiduToken = null;
-          // 尝试获取百度 token
-          const appId = currentBaiduAppId || baiduAppIdInput?.value?.trim();
-          const apiKey = currentBaiduApiKey || baiduApiKeyInput?.value?.trim();
-          const secretKey = currentBaiduSecretKey || baiduSecretKeyInput?.value?.trim();
-          if (appId && apiKey && secretKey) {
-            try {
-              baiduToken = await getBaiduAccessToken(appId, apiKey, secretKey);
-              console.log('百度 OCR token 已获取，将用于增强识别。');
-            } catch (e) {
-              console.warn('百度 OCR token 获取失败，仅使用本地 OCR:', e.message);
-            }
-          }
-
           for (let k = 0; k < ocrPages.length; k++) {
             const p = ocrPages[k];
             showInfo(`OCR 第 ${p} / ${total} 页  (${k + 1} / ${ocrPages.length})…`);
             if (k > 0) await new Promise((r) => setTimeout(r, 100));
 
-            // 对当前页渲染一次 canvas
             let canvas = null;
             try {
               canvas = await renderPageToCanvas(pdf, p);
@@ -376,46 +284,14 @@
               continue;
             }
 
-            let combinedResult = '';
-
-            // 方案1：本地 Tesseract OCR（无网络依赖，始终可用）
             try {
               const tessText = await ocrLocalTesseract(canvas);
               if (tessText) {
-                combinedResult = tessText;
-                console.log(`第 ${p} 页 Tesseract 本地 OCR 完成，${tessText.length} 字符。`);
+                perPageText[p - 1] = tessText;
+                console.log(`第 ${p} 页 Tesseract OCR 完成，${tessText.length} 字符。`);
               }
             } catch (tessErr) {
               console.warn(`第 ${p} 页 Tesseract 识别失败:`, tessErr.message);
-            }
-
-            // 方案2：百度 OCR 增强（如果能用，合并结果）
-            if (baiduToken) {
-              try {
-                const img = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
-                const baiduUrl = `https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${encodeURIComponent(baiduToken)}`;
-                const res = await baiduFetch(baiduUrl, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                  body: `image=${encodeURIComponent(img)}`
-                });
-                if (res.ok) {
-                  const data = await res.json();
-                  const baiduText = (data.words_result || []).map((w) => w.words).join('\n').replace(/\s+/g, ' ').trim();
-                  if (baiduText) {
-                    combinedResult = combinedResult ? combinedResult + '\n' + baiduText : baiduText;
-                    console.log(`第 ${p} 页百度 OCR 增强完成。`);
-                  }
-                } else {
-                  console.warn(`第 ${p} 页百度 OCR HTTP ${res.status}`);
-                }
-              } catch (baiduErr) {
-                console.warn(`第 ${p} 页百度 OCR 调用失败:`, baiduErr.message);
-              }
-            }
-
-            if (combinedResult.trim()) {
-              perPageText[p - 1] = combinedResult.trim();
             }
           }
         }
@@ -428,20 +304,20 @@
         showInfo(`提取完成：共 ${totalChars} 字符 ${ocrPages.length > 0 ? `（含 ${ocrPages.length} 页 OCR）` : '（无需 OCR）'}`);
         return { text: finalText, pageCount: total };
       }
-      async function callDeepSeek(apiKey, prompt) {
+      async function callKimi(apiKey, prompt) {
         let res;
         try {
-          res = await fetch('https://api.deepseek.com/chat/completions', {
+          res = await fetch('https://api.moonshot.cn/v1/chat/completions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: '你是一名具备注册会计师资质的财务报告审查专家。请输出结构化审查报告，结论明确。' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 16384, stream: false })
+            body: JSON.stringify({ model: 'moonshot-v1-8k', messages: [{ role: 'system', content: '你是一名具备注册会计师资质的财务报告审查专家。请输出结构化审查报告，结论明确。' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 8192, stream: false })
           });
         } catch (err) {
-          throw new Error(getFetchErrorMessage(err, 'DeepSeek'));
+          throw new Error(getFetchErrorMessage(err, 'Kimi'));
         }
         if (!res.ok) {
           const errBody = await res.json().catch(() => ({}));
-          throw new Error(`DeepSeek API 错误：${JSON.stringify(errBody)}`);
+          throw new Error(`Kimi API 错误：${JSON.stringify(errBody)}`);
         }
         const data = await res.json();
         return data.choices?.[0]?.message?.content || '';
@@ -496,7 +372,7 @@
           return;
         }
         if (!currentApiKey) {
-          showError('请先输入 DeepSeek API Key。');
+          showError('请先输入 Kimi API Key。');
           return;
         }
         if (isFileOrigin()) {
@@ -510,10 +386,10 @@
         reportBox.textContent = '正在生成审查内容，请稍候…';
         try {
           const { text, pageCount } = await parsePdf(currentFile);
-          setStatus('正在调用 DeepSeek 审查…');
+          setStatus('正在调用 Kimi 审查…');
           setStep(2);
           const prompt = `你是一名具备注册会计师（CPA）资质的财务报告审查专家，同时精通中英文排版规范。请你对所提供的完整 PDF 财务报告（含合并财务报表、附注、董事报告、审计报告及补充信息）进行逐项审查，并严格按照以下三项任务输出最终结论。\n\n【审查范围】\n- 文件内容：完整年度财务报告（含合并财务报表、附注、董事报告、审计报告、补充信息）。\n- 重点关注：合并财务状况表（资产负债表）及其附注、全文标点符号与格式。\n\n【任务一：审查合并财务状况表各字段是否有数据计算错误】\n1. 逐项验证“总资产”是否等于各资产科目加总（包含所有明细行）。\n2. 逐项验证“总负债”是否等于各负债科目加总。\n3. 逐项验证“总权益”是否等于各权益科目加总（注意股本、储备、累计亏损等正负号）。\n4. 验证会计恒等式：总资产 = 总负债 + 总权益。\n5. 验证“净流动资产/总资产”等派生指标（如有）是否基于上述数据正确计算。\n6. 检查是否存在因四舍五入（千港元）导致的 1–2 单位差异，若存在需说明是否可接受。\n\n【任务二：审查合并财务状况表与附注内容是否一致】\n1. 将财务状况表中的每个资产、负债、权益科目金额，与对应附注（如附注 12~25 等）中的“合计”金额逐项比对。\n2. 检查附注中披露的明细加总是否等于附注总计，且该总计与财务状况表科目完全一致。\n3. 检查附注中是否存在额外披露的金融工具（如衍生品、承诺）未在财务状况表中列示，但应在表内确认的情况。\n4. 检查附注中的重分类、期初余额调整等是否已正确反映在财务状况表中。\n\n【任务三：审查整个文件是否存在标点符号和格式的错误】\n1. 标点符号错误包括（但不限于）：\n- 中英文标点混用。\n- 多余的反斜杠、转义符。\n- 数字分隔符错误。\n- 括号、引号不匹配或重复。\n- 英文单词连字符缺失或多余。\n- 日期格式不统一。\n- 缩写首次出现未定义。\n- 文本中明显重复的句子或段落。\n2. 格式错误包括（但不限于）：\n- 表格线条缺失或合并单元格错位。\n- 表格内数字未按小数点对齐。\n- 标题编号重复或跳号。\n- 页眉页脚信息错乱。\n- 字体不一致。\n- 段落缩进不统一或换行异常。\n- 表格跨页断开后未重印表头。\n- 图表编号与引用不符。\n\n【输出格式要求】\n请按照以下结构输出最终审查报告，每项结论必须明确打“✅”或“❌”，并附具体证据说明：\n\n---\n\n### 任务一：数据计算错误审查\n\n#### 总资产加总\n- 各科目列表（列出每项金额）→ 计算总和 → 财务报表列示总额 → 比对结果（✅ 或 ❌）\n\n#### 总负债加总\n（同上格式）\n\n#### 总权益加总\n（同上格式）\n\n#### 恒等式验证\n资产总额（ ） = 负债总额（ ） + 权益总额（ ） → 比对结果\n\n#### 其他派生计算（如有）\n- 例如“净利息收入/平均资产”等，提供计算过程及比对结果。\n若全部正确，最后写“✅ 任务一结论：无任何计算错误。”若发现错误，逐项用表格列出“错误位置、正确值、报告值、差异”。\n\n---\n\n### 任务二：主表与附注一致性审查\n请以表格形式列出每个科目，格式如下：\n\n主表科目 | 主表金额 | 对应附注编号 | 附注合计金额 | 是否一致\n\n若全部一致，最后写“✅ 任务二结论：所有科目均与附注一致，无冲突。”\n若发现不一致，详细说明差异原因。\n\n---\n\n### 任务三：标点符号与格式错误审查\n请分类列出所有发现的错误，按“页码/段落”定位，并分类为“标点错误”或“格式错误”。\n\n示例格式：\n- 页码位置/内容摘录 | 错误类型 | 错误描述 | 修正建议\n\n列出所有错误后，给出总体评价：\n- 若错误较多且影响阅读，写“❌ 任务三结论：存在较多格式/标点错误，建议修正。”\n- 若错误轻微且不影响数据理解，写“⚠️ 任务三结论：存在少量格式瑕疵，但不影响实质内容。”\n- 若无错误，写“✅ 任务三结论：全文标点与格式规范。”\n\n---\n\n【附加要求】\n- 所有金额必须带单位（千港元），并注明年份。\n- 若发现任何无法校验的项目（如因 PDF 提取导致数字模糊），请明确指出并注明“无法验证”。\n- 最终输出需简洁明了，避免冗余分析，只给出结论和关键证据。\n\n文件名：${currentFile.name}\n页数：${pageCount}\n\nPDF 文本：\n${text}`;
-          const report = await callDeepSeek(currentApiKey, prompt);
+          const report = await callKimi(currentApiKey, prompt);
           currentReport = report;
           reportBox.textContent = report || '未返回有效报告。';
           setStatus('审查完成');
