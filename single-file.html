@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Deep-review of Financial Report</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, "Noto Sans SC", system-ui, sans-serif;
+        background: linear-gradient(135deg, #fff7fb 0%, #fffdf8 100%);
+        color: #374151;
+      }
+      body { margin: 0; min-height: 100vh; padding: 24px; background: radial-gradient(circle at top, rgba(244,114,182,0.16), transparent 45%), linear-gradient(135deg, #fff7fb 0%, #fffdf8 100%); }
+      .app { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+      .card { background: rgba(255,255,255,0.92); border: 1px solid #f8cfe0; border-radius: 24px; padding: 20px; box-shadow: 0 20px 60px -25px rgba(244,114,182,0.35); }
+      .header { text-align: center; }
+      .title { font-size: 28px; font-weight: 800; margin: 8px 0 6px; color: #1f2937; }
+      .subtitle { color: #6b7280; margin: 0; }
+      .badge { display: inline-block; padding: 8px 14px; border-radius: 999px; background: linear-gradient(90deg, #ffe4ee, #fde7c8); color: #be185d; font-weight: 700; }
+      .dropzone { border: 2px dashed #f4a7c1; background: #fff; border-radius: 24px; padding: 28px; text-align: center; cursor: pointer; transition: all 0.25s ease; }
+      .dropzone:hover { transform: scale(1.01); background: #fff7fb; }
+      .dropzone.dragging { border-color: #f43f5e; background: #fff1f2; }
+      .dropzone .icon { font-size: 42px; margin-bottom: 10px; }
+      .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+      button, input, textarea { font: inherit; }
+      button { border: none; cursor: pointer; padding: 10px 14px; border-radius: 16px; font-weight: 700; }
+      .primary { background: linear-gradient(90deg, #f43f5e, #fb923c); color: white; }
+      .secondary { background: #fef3c7; color: #92400e; }
+      .muted { background: #f9fafb; color: #4b5563; }
+      .status { font-size: 18px; font-weight: 700; margin-bottom: 8px; color: #111827; }
+      .hint { color: #6b7280; line-height: 1.6; }
+      .error { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; padding: 12px 14px; border-radius: 16px; }
+      .info { background: #fefce8; color: #92400e; border: 1px solid #fde68a; padding: 12px 14px; border-radius: 16px; }
+      .report { white-space: pre-wrap; background: #f8fafc; padding: 16px; border-radius: 18px; border: 1px solid #e5e7eb; line-height: 1.7; }
+      .hidden { display: none; }
+      .grid { display: grid; gap: 18px; grid-template-columns: 1.05fr 0.95fr; }
+      .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+      .step { border-radius: 16px; padding: 12px; border: 1px solid #fbcfe8; background: #fffdfb; }
+      .step.active { background: #fff1f2; border-color: #fb7185; }
+      .step.done { background: #ecfdf5; border-color: #6ee7b7; }
+      .step-title { font-weight: 700; margin-bottom: 4px; }
+      .step-desc { font-size: 13px; color: #6b7280; }
+      .pill { display: inline-block; padding: 6px 10px; border-radius: 999px; font-size: 13px; background: #fdf2f8; color: #be185d; font-weight: 700; }
+      @media (max-width: 900px) { .grid, .steps { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="card header">
+        <div class="badge">🧿 Deep-review of Financial Report</div>
+        <h1 class="title">拖入 PDF 财报，自动生成专业审查报告</h1>
+        <p class="subtitle">这是一个可直接转发使用的单文件版本，保留了当前项目的核心功能：上传、解析、OCR 回退、API Key 设置、报告生成与下载。</p>
+      </div>
+
+      <div class="card">
+        <div class="actions" style="margin-bottom: 12px;">
+          <button class="secondary" id="settingsToggle">⚙️ 设置 API Key</button>
+          <button class="secondary" id="clearBtn">🧹 清空</button>
+        </div>
+        <div id="settingsPanel" class="hidden" style="margin-top: 8px;">
+          <label class="hint" for="apiKeyInput">DeepSeek API Key</label>
+          <input id="apiKeyInput" type="password" placeholder="请输入 DeepSeek API Key" style="width: 100%; margin-top: 8px; padding: 10px 12px; border-radius: 12px; border: 1px solid #fbcfe8;" />
+          <div class="actions" style="margin-top: 10px;">
+            <button class="primary" id="testKeyBtn">🧪 测试连接</button>
+            <button class="muted" id="saveKeyBtn">💾 保存</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="steps" id="steps">
+          <div class="step" data-step="1"><div class="step-title">📥 解析 PDF</div><div class="step-desc">提取文本或尝试 OCR</div></div>
+          <div class="step" data-step="2"><div class="step-title">🔍 AI 审查中</div><div class="step-desc">调用 DeepSeek 生成报告</div></div>
+          <div class="step" data-step="3"><div class="step-title">✅ 报告生成</div><div class="step-desc">展示审查结论</div></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div id="dropzone" class="dropzone">
+          <div class="icon">📄</div>
+          <div class="status" id="status">将 PDF 文件拖到此处，或点击选择</div>
+          <div class="hint">支持上传文字型 PDF；若是扫描版 PDF，系统会尝试做 OCR 识别。</div>
+          <input id="fileInput" type="file" accept=".pdf" class="hidden" />
+        </div>
+      </div>
+
+      <div class="grid">
+        <div class="card">
+          <div class="actions">
+            <button class="primary" id="reviewBtn">🔍 开始审查</button>
+            <button class="secondary" id="copyBtn">📋 复制报告</button>
+            <button class="secondary" id="downloadBtn">💾 下载报告</button>
+          </div>
+          <div id="messageBox" class="hint" style="margin-top:12px"></div>
+          <div id="errorBox" class="error hidden" style="margin-top:12px"></div>
+          <div id="infoBox" class="info hidden" style="margin-top:12px"></div>
+          <div id="fileInfo" class="hint" style="margin-top:12px"></div>
+        </div>
+
+        <div class="card">
+          <div class="status">审查报告</div>
+          <div id="reportBox" class="report">等待上传 PDF 文件后开始审查。</div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      try {
+        const pdfjsLib = await import('./libs/pdf.mjs');
+        window.pdfjsLib = pdfjsLib;
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = './libs/pdf.worker.mjs';
+      } catch (error) {
+        console.warn('本地 PDF.js 加载失败，页面将尝试使用 CDN 回退。', error);
+      }
+    </script>
+    <script src="./libs/tesseract.min.js"></script>
+    <script>
+      const dropzone = document.getElementById('dropzone');
+      const fileInput = document.getElementById('fileInput');
+      const reviewBtn = document.getElementById('reviewBtn');
+      const clearBtn = document.getElementById('clearBtn');
+      const copyBtn = document.getElementById('copyBtn');
+      const downloadBtn = document.getElementById('downloadBtn');
+      const settingsToggle = document.getElementById('settingsToggle');
+      const settingsPanel = document.getElementById('settingsPanel');
+      const apiKeyInput = document.getElementById('apiKeyInput');
+      const saveKeyBtn = document.getElementById('saveKeyBtn');
+      const testKeyBtn = document.getElementById('testKeyBtn');
+      const statusEl = document.getElementById('status');
+      const messageBox = document.getElementById('messageBox');
+      const errorBox = document.getElementById('errorBox');
+      const infoBox = document.getElementById('infoBox');
+      const fileInfo = document.getElementById('fileInfo');
+      const reportBox = document.getElementById('reportBox');
+      const stepEls = Array.from(document.querySelectorAll('.step'));
+      let currentFile = null;
+      let currentReport = '';
+      let currentApiKey = localStorage.getItem('single-file-api-key') || '';
+      apiKeyInput.value = currentApiKey;
+
+      function showError(text) {
+        errorBox.textContent = text;
+        errorBox.classList.remove('hidden');
+      }
+      function hideError() {
+        errorBox.classList.add('hidden');
+        errorBox.textContent = '';
+      }
+      function showInfo(text) {
+        infoBox.textContent = text;
+        infoBox.classList.remove('hidden');
+      }
+      function hideInfo() {
+        infoBox.classList.add('hidden');
+        infoBox.textContent = '';
+      }
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+      function setStep(step) {
+        stepEls.forEach((el) => {
+          const elStep = Number(el.dataset.step);
+          el.classList.remove('active', 'done');
+          if (elStep < step) el.classList.add('done');
+          else if (elStep === step) el.classList.add('active');
+        });
+      }
+      function formatSize(size) {
+        if (!size) return '未知';
+        return size > 1024 * 1024 ? `${(size / 1024 / 1024).toFixed(2)} MB` : `${(size / 1024).toFixed(1)} KB`;
+      }
+      function setFile(file) {
+        currentFile = file;
+        fileInfo.innerHTML = `<strong>已选择：</strong> ${file.name}（${formatSize(file.size)}）`;
+      }
+      function saveApiKey() {
+        currentApiKey = apiKeyInput.value.trim();
+        localStorage.setItem('single-file-api-key', currentApiKey);
+        messageBox.textContent = 'API Key 已保存。';
+      }
+      async function testApiKey() {
+        if (!currentApiKey) {
+          showError('请输入 API Key 后再测试。');
+          return;
+        }
+        showInfo('正在测试连接…');
+        try {
+          const res = await fetch('https://api.deepseek.com/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${currentApiKey}` },
+            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: '请回复“连接成功”。' }, { role: 'user', content: '请验证 API Key。' }], temperature: 0.1, max_tokens: 128, stream: false })
+          });
+          if (!res.ok) throw new Error('连接失败，请检查 Key 是否正确。');
+          hideInfo();
+          messageBox.textContent = '连接成功。';
+        } catch (err) {
+          showError(err.message || '测试连接失败。');
+        }
+      }
+      async function extractTextWithPdfjs(pdf) {
+        const parts = [];
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const content = await page.getTextContent();
+          const text = content.items.map((item) => ('str' in item ? item.str : '')).join(' ').replace(/\s+/g, ' ').trim();
+          if (text) parts.push(text);
+        }
+        return parts.join('\n\n');
+      }
+      async function extractTextWithOCR(pdf) {
+        if (typeof window.Tesseract === 'undefined' || !window.Tesseract.createWorker) throw new Error('OCR 库不可用。');
+        const worker = await window.Tesseract.createWorker({
+          workerPath: './libs/worker.min.js',
+          corePath: './libs/tesseract-core.wasm.js',
+          langPath: './tessdata'
+        });
+        try {
+          await worker.load();
+          await worker.loadLanguage('eng');
+          await worker.initialize('eng');
+          await worker.setParameters({ tessedit_pageseg_mode: 6 });
+          const parts = [];
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const viewport = page.getViewport({ scale: 1.6 });
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) continue;
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            const result = await worker.recognize(canvas);
+            const text = result.data.text.replace(/\s+/g, ' ').trim();
+            if (text) parts.push(text);
+          }
+          return parts.join('\n\n');
+        } finally {
+          await worker.terminate();
+        }
+      }
+      async function parsePdf(file) {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdfjsLib = window.pdfjsLib;
+        if (!pdfjsLib) throw new Error('PDF.js 未加载成功。');
+        pdfjsLib.GlobalWorkerOptions.workerSrc = './libs/pdf.worker.mjs';
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        let text = await extractTextWithPdfjs(pdf);
+        if (!text.trim() || text.trim().length < 80) {
+          showInfo('文本提取较少，正在尝试 OCR 识别…');
+          text = await extractTextWithOCR(pdf);
+        }
+        if (!text.trim()) throw new Error('PDF 中没有提取到可用文本。');
+        return { text, pageCount: pdf.numPages };
+      }
+      async function callDeepSeek(apiKey, prompt) {
+        const res = await fetch('https://api.deepseek.com/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: '你是一名具备注册会计师资质的财务报告审查专家。请输出结构化审查报告，结论明确。' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 16384, stream: false })
+        });
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(`DeepSeek API 错误：${JSON.stringify(errBody)}`);
+        }
+        const data = await res.json();
+        return data.choices?.[0]?.message?.content || '';
+      }
+
+      dropzone.addEventListener('click', () => fileInput.click());
+      dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragging'); });
+      dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragging'));
+      dropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropzone.classList.remove('dragging');
+        const file = e.dataTransfer.files?.[0];
+        if (file) setFile(file);
+      });
+      fileInput.addEventListener('change', (e) => {
+        const file = e.target.files?.[0];
+        if (file) setFile(file);
+      });
+      settingsToggle.addEventListener('click', () => settingsPanel.classList.toggle('hidden'));
+      saveKeyBtn.addEventListener('click', saveApiKey);
+      testKeyBtn.addEventListener('click', testApiKey);
+      clearBtn.addEventListener('click', () => {
+        currentFile = null;
+        currentReport = '';
+        fileInput.value = '';
+        fileInfo.innerHTML = '';
+        reportBox.textContent = '等待上传 PDF 文件后开始审查。';
+        hideError();
+        hideInfo();
+        setStatus('将 PDF 文件拖到此处，或点击选择');
+        setStep(1);
+      });
+      copyBtn.addEventListener('click', () => {
+        if (!currentReport) return;
+        navigator.clipboard.writeText(currentReport);
+        messageBox.textContent = '报告已复制到剪贴板。';
+      });
+      downloadBtn.addEventListener('click', () => {
+        if (!currentReport) return;
+        const blob = new Blob([currentReport], { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'financial-review.md';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+      reviewBtn.addEventListener('click', async () => {
+        if (!currentFile) {
+          showError('请先选择一个 PDF 文件。');
+          return;
+        }
+        if (!currentFile.name.toLowerCase().endsWith('.pdf')) {
+          showError('请上传 PDF 文件。');
+          return;
+        }
+        if (!currentApiKey) {
+          showError('请先输入 DeepSeek API Key。');
+          return;
+        }
+        hideError();
+        setStatus('正在解析 PDF…');
+        setStep(1);
+        showInfo('正在提取 PDF 文本，如没有内容则尝试 OCR。');
+        reportBox.textContent = '正在生成审查内容，请稍候…';
+        try {
+          const { text, pageCount } = await parsePdf(currentFile);
+          setStatus('正在调用 DeepSeek 审查…');
+          setStep(2);
+          const prompt = `请对以下 PDF 财务报告内容进行审查。要求：\n1. 重点关注资产负债表、附注和格式问题。\n2. 输出结构化报告。\n3. 每项结论必须明确打上 ✅ 或 ❌。\n\n文件名：${currentFile.name}\n页数：${pageCount}\n\nPDF 文本：\n${text}`;
+          const report = await callDeepSeek(currentApiKey, prompt);
+          currentReport = report;
+          reportBox.textContent = report || '未返回有效报告。';
+          setStatus('审查完成');
+          setStep(3);
+          hideInfo();
+          messageBox.textContent = '报告已生成。';
+        } catch (err) {
+          setStatus('处理失败');
+          setStep(1);
+          showError(err.message || '处理失败。');
+        }
+      });
+    </script>
+  </body>
+</html>
