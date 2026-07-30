@@ -132,15 +132,47 @@
       let currentBaiduApiKey = embeddedConfig.baiduApiKey;
       let currentBaiduSecretKey = embeddedConfig.baiduSecretKey;
 
+      const CORS_PROXIES = [
+        'https://corsproxy.io/?',
+        'https://api.allorigins.win/raw?url='
+      ];
+
       function isFileOrigin() {
         return location.protocol === 'file:';
       }
 
       function getFetchErrorMessage(err, provider) {
         if (err?.name === 'TypeError' && /failed to fetch/i.test(err.message || '')) {
-          return `${provider} 请求被浏览器阻止。原因通常是当前页面是 file:// 打开，或者本地服务未正确启动。请改用 http://localhost:8000 或部署到 GitHub Pages 后再试。`;
+          return `${provider} 请求被浏览器阻止（CORS 限制）。已尝试直连和 CORS 代理均失败。如果你是部署到 GitHub Pages，请检查百度/DeepSeek API 服务是否正常。`;
         }
         return err?.message || '请求失败。';
+      }
+
+      async function baiduFetch(url, options = {}) {
+        // 先尝试直连
+        try {
+          const res = await fetch(url, options);
+          return res;
+        } catch (directErr) {
+          if (directErr.name !== 'TypeError' || !/failed to fetch/i.test(directErr.message || '')) {
+            throw directErr;
+          }
+          console.warn('直连百度 API 被 CORS 阻止，尝试通过 CORS 代理...');
+        }
+        // 通过 CORS 代理逐一遍历重试
+        let lastErr;
+        for (const proxy of CORS_PROXIES) {
+          try {
+            const proxyUrl = proxy + encodeURIComponent(url);
+            const res = await fetch(proxyUrl, options);
+            if (res.ok) return res;
+            lastErr = new Error(`代理返回 HTTP ${res.status}`);
+          } catch (proxyErr) {
+            lastErr = proxyErr;
+            console.warn(`CORS 代理 ${proxy} 失败:`, proxyErr.message);
+          }
+        }
+        throw lastErr || new Error('百度 OCR: 所有 CORS 代理均不可用');
       }
 
       function showError(text) {
@@ -193,7 +225,7 @@
         const tokenUrl = `https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${encodeURIComponent(apiKey)}&client_secret=${encodeURIComponent(secretKey)}`;
         let res;
         try {
-          res = await fetch(tokenUrl, { method: 'POST' });
+          res = await baiduFetch(tokenUrl, { method: 'POST' });
         } catch (err) {
           throw new Error(getFetchErrorMessage(err, '百度 OCR'));
         }
@@ -219,7 +251,8 @@
           const imageBase64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
           let res;
           try {
-            res = await fetch(`https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${encodeURIComponent(accessToken)}`, {
+            const ocrUrl = `https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${encodeURIComponent(accessToken)}`;
+            res = await baiduFetch(ocrUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
               body: `image=${encodeURIComponent(imageBase64)}`
