@@ -144,7 +144,7 @@
       }
 
       function showError(text) {
-        errorBox.textContent = text;
+        errorBox.innerHTML = text;
         errorBox.classList.remove('hidden');
       }
       function hideError() {
@@ -320,7 +320,7 @@
           return;
         }
         if (isFileOrigin()) {
-          showError('当前页面是通过 file:// 打开的，浏览器会阻止远程 API 请求。请改用 http://localhost:8000 或部署到 GitHub Pages 后再试。');
+          showError('当前页面是通过 file:// 打开的，浏览器会阻止远程 API 请求。<br><br>👉 <a href="http://localhost:8000" style="color:#b91c1c;font-weight:700;">点击此处跳转到 http://localhost:8000</a><br><br>或双击运行项目目录下的 <b>start_server.bat</b> 启动本地服务。');
           return;
         }
         hideError();
