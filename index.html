@@ -138,7 +138,7 @@
 
       function getFetchErrorMessage(err, provider) {
         if (err?.name === 'TypeError' && /failed to fetch/i.test(err.message || '')) {
-          return `${provider} 请求被浏览器阻止。请通过 http://localhost:8000 或 GitHub Pages 页面访问后再试。`;
+          return `${provider} 请求被浏览器阻止。原因通常是当前页面是 file:// 打开，或者本地服务未正确启动。请改用 http://localhost:8000 或部署到 GitHub Pages 后再试。`;
         }
         return err?.message || '请求失败。';
       }
