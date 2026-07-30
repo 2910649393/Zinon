@@ -61,7 +61,7 @@
 
       <div class="card">
         <div class="steps" id="steps">
-          <div class="step" data-step="1"><div class="step-title">📥 解析 PDF</div><div class="step-desc">仅使用百度 OCR 提取文本</div></div>
+          <div class="step" data-step="1"><div class="step-title">📥 解析 PDF</div><div class="step-desc">优先文本层提取，扫描件自动 OCR</div></div>
           <div class="step" data-step="2"><div class="step-title">🔍 AI 审查中</div><div class="step-desc">调用 DeepSeek 生成报告</div></div>
           <div class="step" data-step="3"><div class="step-title">✅ 报告生成</div><div class="step-desc">展示审查结论</div></div>
         </div>
@@ -71,7 +71,7 @@
         <div id="dropzone" class="dropzone">
           <div class="icon">📄</div>
           <div class="status" id="status">将 PDF 文件拖到此处，或点击选择</div>
-          <div class="hint">支持上传 PDF；系统将仅通过百度 OCR 识别并提取文本。</div>
+          <div class="hint">支持上传 PDF；优先提取文本层，扫描件自动调用百度 OCR 识别。</div>
           <input id="fileInput" type="file" accept=".pdf" class="hidden" />
         </div>
       </div>
@@ -237,6 +237,44 @@
         if (!data.access_token) throw new Error('百度 OCR 未返回 access_token。');
         return data.access_token;
       }
+      // 使用 PDF.js 内置方法直接提取文本层（适用于带文本层的财务 PDF）
+      async function extractTextWithPDFJS(pdf) {
+        const parts = [];
+        const MAX_PAGES_PER_BATCH = 50; // 每批最多处理 50 页
+        for (let start = 1; start <= pdf.numPages; start += MAX_PAGES_PER_BATCH) {
+          const end = Math.min(start + MAX_PAGES_PER_BATCH - 1, pdf.numPages);
+          const pagePromises = [];
+          for (let i = start; i <= end; i++) {
+            pagePromises.push(
+              pdf.getPage(i).then(async (page) => {
+                try {
+                  const textContent = await page.getTextContent();
+                  const text = textContent.items
+                    .map((item) => item.str || '')
+                    .join(' ')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                  return text;
+                } catch (e) {
+                  console.warn(`第 ${i} 页 PDF 文本提取失败:`, e.message);
+                  return '';
+                }
+              })
+            );
+          }
+          const pageTexts = await Promise.all(pagePromises);
+          for (const t of pageTexts) {
+            if (t) parts.push(t);
+          }
+          // 每批之间短暂释放主线程，避免 UI 卡死
+          if (end < pdf.numPages) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+        }
+        return parts.join('\n\n');
+      }
+
+      // 仅对扫描件（无文本层的 PDF）使用百度 OCR 逐页识别
       async function extractTextWithBaiduOCR(pdf) {
         const appId = currentBaiduAppId || baiduAppIdInput.value.trim();
         const apiKey = currentBaiduApiKey || baiduApiKeyInput.value.trim();
@@ -247,6 +285,11 @@
         const accessToken = await getBaiduAccessToken(appId, apiKey, secretKey);
         const parts = [];
         for (let i = 1; i <= pdf.numPages; i++) {
+          showInfo(`正在 OCR 识别第 ${i} / ${pdf.numPages} 页…`);
+          // 每次 OCR 之间稍作延迟，避免触发百度 API 频率限制
+          if (i > 1) {
+            await new Promise((resolve) => setTimeout(resolve, 300));
+          }
           const canvas = await renderPageToCanvas(pdf, i);
           const imageBase64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
           let res;
@@ -262,7 +305,7 @@
           }
           if (!res.ok) {
             const errBody = await res.text().catch(() => '');
-            throw new Error(`百度 OCR 识别失败：${errBody || res.status}`);
+            throw new Error(`百度 OCR 识别第 ${i} 页失败：${errBody || res.status}`);
           }
           const data = await res.json();
           const text = (data.words_result || []).map((item) => item.words).join('\n').replace(/\s+/g, ' ').trim();
@@ -270,16 +313,32 @@
         }
         return parts.join('\n\n');
       }
+
       async function parsePdf(file) {
         const arrayBuffer = await file.arrayBuffer();
         const pdfjsLib = window.pdfjsLib;
         if (!pdfjsLib) throw new Error('PDF.js 未加载成功。');
         pdfjsLib.GlobalWorkerOptions.workerSrc = './libs/pdf.worker.mjs';
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-        showInfo('正在仅使用百度 OCR 提取文本…');
-        const text = await extractTextWithBaiduOCR(pdf);
-        if (!text.trim()) throw new Error('PDF 中没有提取到可用文本。');
-        return { text, pageCount: pdf.numPages };
+
+        // 优先使用 PDF.js 文本层提取（快速、准确、无需 API）
+        showInfo('正在提取 PDF 文本层…');
+        const textFromPDFJS = await extractTextWithPDFJS(pdf);
+        const charCount = textFromPDFJS.replace(/\s/g, '').length;
+        console.log(`PDF.js 文本提取完成，共 ${charCount} 个有效字符。`);
+
+        // 如果 PDF.js 提取到足够文本（>500 有效字符），直接使用
+        if (charCount > 500) {
+          showInfo(`PDF 文本层提取成功（${charCount} 字符），无需 OCR。`);
+          return { text: textFromPDFJS, pageCount: pdf.numPages, method: 'pdfjs' };
+        }
+
+        // 否则回退到百度 OCR（适用于扫描件 PDF）
+        showInfo(`PDF 文本层仅 ${charCount} 字符，可能是扫描件，切换到百度 OCR 识别…`);
+        const textFromOCR = await extractTextWithBaiduOCR(pdf);
+        const finalText = textFromOCR || textFromPDFJS;
+        if (!finalText.trim()) throw new Error('PDF 中没有提取到可用文本。');
+        return { text: finalText, pageCount: pdf.numPages, method: 'baidu_ocr' };
       }
       async function callDeepSeek(apiKey, prompt) {
         let res;
@@ -359,7 +418,7 @@
         hideError();
         setStatus('正在解析 PDF…');
         setStep(1);
-        showInfo('正在仅使用百度 OCR 提取 PDF 文本。');
+        showInfo('正在解析 PDF 文件…');
         reportBox.textContent = '正在生成审查内容，请稍候…';
         try {
           const { text, pageCount } = await parsePdf(currentFile);
