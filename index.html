@@ -132,6 +132,17 @@
       let currentBaiduApiKey = embeddedConfig.baiduApiKey;
       let currentBaiduSecretKey = embeddedConfig.baiduSecretKey;
 
+      function isFileOrigin() {
+        return location.protocol === 'file:';
+      }
+
+      function getFetchErrorMessage(err, provider) {
+        if (err?.name === 'TypeError' && /failed to fetch/i.test(err.message || '')) {
+          return `${provider} 请求被浏览器阻止。请通过 http://localhost:8000 或 GitHub Pages 页面访问后再试。`;
+        }
+        return err?.message || '请求失败。';
+      }
+
       function showError(text) {
         errorBox.textContent = text;
         errorBox.classList.remove('hidden');
@@ -180,7 +191,12 @@
       }
       async function getBaiduAccessToken(appId, apiKey, secretKey) {
         const tokenUrl = `https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=${encodeURIComponent(apiKey)}&client_secret=${encodeURIComponent(secretKey)}`;
-        const res = await fetch(tokenUrl, { method: 'POST' });
+        let res;
+        try {
+          res = await fetch(tokenUrl, { method: 'POST' });
+        } catch (err) {
+          throw new Error(getFetchErrorMessage(err, '百度 OCR'));
+        }
         if (!res.ok) {
           const errBody = await res.text().catch(() => '');
           throw new Error(`百度 OCR 获取 Token 失败：${errBody || res.status}`);
@@ -201,11 +217,16 @@
         for (let i = 1; i <= pdf.numPages; i++) {
           const canvas = await renderPageToCanvas(pdf, i);
           const imageBase64 = canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
-          const res = await fetch(`https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${encodeURIComponent(accessToken)}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `image=${encodeURIComponent(imageBase64)}`
-          });
+          let res;
+          try {
+            res = await fetch(`https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic?access_token=${encodeURIComponent(accessToken)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: `image=${encodeURIComponent(imageBase64)}`
+            });
+          } catch (err) {
+            throw new Error(getFetchErrorMessage(err, '百度 OCR'));
+          }
           if (!res.ok) {
             const errBody = await res.text().catch(() => '');
             throw new Error(`百度 OCR 识别失败：${errBody || res.status}`);
@@ -228,11 +249,16 @@
         return { text, pageCount: pdf.numPages };
       }
       async function callDeepSeek(apiKey, prompt) {
-        const res = await fetch('https://api.deepseek.com/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: '你是一名具备注册会计师资质的财务报告审查专家。请输出结构化审查报告，结论明确。' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 16384, stream: false })
-        });
+        let res;
+        try {
+          res = await fetch('https://api.deepseek.com/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+            body: JSON.stringify({ model: 'deepseek-chat', messages: [{ role: 'system', content: '你是一名具备注册会计师资质的财务报告审查专家。请输出结构化审查报告，结论明确。' }, { role: 'user', content: prompt }], temperature: 0.1, max_tokens: 16384, stream: false })
+          });
+        } catch (err) {
+          throw new Error(getFetchErrorMessage(err, 'DeepSeek'));
+        }
         if (!res.ok) {
           const errBody = await res.json().catch(() => ({}));
           throw new Error(`DeepSeek API 错误：${JSON.stringify(errBody)}`);
@@ -291,6 +317,10 @@
         }
         if (!currentApiKey) {
           showError('请先输入 DeepSeek API Key。');
+          return;
+        }
+        if (isFileOrigin()) {
+          showError('当前页面是通过 file:// 打开的，浏览器会阻止远程 API 请求。请改用 http://localhost:8000 或部署到 GitHub Pages 后再试。');
           return;
         }
         hideError();
